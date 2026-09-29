@@ -2761,7 +2761,9 @@ func _tree_get_drag(at: Vector2) -> Variant:
 
 
 func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
+	EditorInterface.save_all_scenes()          # <-- AJOUT : évite de perdre des modifs au rechargement
 	var moved := 0
+	var moves: Array = []                       # <-- AJOUT
 	for p in files:
 		var src := p.trim_suffix("/")
 		if not _can_move_one(src, dst_dir):
@@ -2770,9 +2772,11 @@ func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
 		if FileAccess.file_exists(dst) or DirAccess.dir_exists_absolute(dst):
 			_flash(L.t("« %s » existe déjà") % src.get_file(), true)
 			continue
+		var is_dir := DirAccess.dir_exists_absolute(src)   # <-- AJOUT (avant le rename)
 		if DirAccess.rename_absolute(src, dst) != OK:
 			_flash(L.t("Échec du déplacement"), true)
 			continue
+		moves.append([src, dst, is_dir])                    # <-- AJOUT
 		for ext in [".import", ".uid"]:
 			if FileAccess.file_exists(src + ext):
 				DirAccess.rename_absolute(src + ext, dst + ext)
@@ -2783,6 +2787,7 @@ func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
 		moved += 1
 	if moved == 0:
 		return
+	_update_references(moves)                               # <-- AJOUT
 	_scan()
 	_flash(L.t("%d élément(s) déplacé(s)") % moved if moved > 1 else L.t("Élément déplacé"))
 
@@ -3358,6 +3363,8 @@ func _rename(path: String) -> void:
 		if FileAccess.file_exists(dst) or DirAccess.dir_exists_absolute(dst):
 			_flash(L.t("« %s » existe déjà") % n, true)
 			return
+		EditorInterface.save_all_scenes()                      # ici plutôt qu'avant le dialogue
+		var is_dir := DirAccess.dir_exists_absolute(src)       # AVANT le rename
 		if DirAccess.rename_absolute(src, dst) != OK:
 			_flash(L.t("Échec du renommage"), true)
 			return
@@ -3368,11 +3375,11 @@ func _rename(path: String) -> void:
 		current_dir = _swap_prefix(current_dir, src, dst)
 		for i in _history.size():
 			_history[i] = _swap_prefix(_history[i], src, dst)
+		_update_references([[src, dst, is_dir]])               # AJOUT
 		_pending_select = dst
 		_scan()
 		_flash(L.t("Renommé en « %s »") % n)
 	)
-
 
 func _duplicate(paths: PackedStringArray) -> void:
 	var last := ""
@@ -3464,6 +3471,49 @@ func _is_under(p: String, src: String) -> bool:
 	var sp := p.trim_suffix("/")
 	return sp == src or sp.begins_with(src + "/")
 
+const REF_EXTS := ["tscn", "tres", "gd", "gdshader", "gdshaderinc", "godot", "cfg"]
+
+func _collect_text_files(dir: String, out: Array) -> void:
+	for d in DirAccess.get_directories_at(dir):
+		if d.begins_with(".") or d == "addons":
+			continue
+		_collect_text_files(dir.path_join(d), out)
+	for f in DirAccess.get_files_at(dir):
+		if f.get_extension().to_lower() in REF_EXTS:
+			out.append(dir.path_join(f))
+
+
+# moves : Array de [src, dst, is_dir]
+func _update_references(moves: Array) -> void:
+	if moves.is_empty():
+		return
+	var files: Array = []
+	_collect_text_files("res://", files)
+	var changed_files := 0
+	for path in files:
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var text := f.get_as_text()
+		f.close()
+		var new_text := text
+		for m in moves:
+			var src: String = m[0]
+			var dst: String = m[1]
+			# Chemin exact entre guillemets (évite de toucher "x.tres2", etc.)
+			new_text = new_text.replace('"' + src + '"', '"' + dst + '"')
+			if m[2]:  # dossier : tout ce qui commence par src + "/"
+				new_text = new_text.replace('"' + src + "/", '"' + dst + "/")
+		if new_text != text:
+			var w := FileAccess.open(path, FileAccess.WRITE)
+			if w:
+				w.store_string(new_text)
+				w.close()
+				changed_files += 1
+	if changed_files > 0:
+		# Recharge les scènes ouvertes, sinon l'éditeur risque de réécrire les anciens chemins
+		for scene in EditorInterface.get_open_scenes():
+			EditorInterface.reload_scene_from_path(scene)
 
 func _swap_prefix(p: String, src: String, dst: String) -> String:
 	var sp := p.trim_suffix("/")
