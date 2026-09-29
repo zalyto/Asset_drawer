@@ -198,11 +198,3 @@ Colors (`COLOR_*`, `TEXT_*`) and the folder palette (`FOLDER_COLORS`) are in the
 **A folder color doesn't show**: colors come from the FileSystem dock. Set it there, or through the drawer's right-click menu, and it will be visible everywhere.
 
 **An error at startup**: disable then re-enable the plugin, and check that the three files are present in `res://addons/asset_drawer/`.
-
-## Contributing
-
-Issues and pull requests are welcome. When reporting a bug, include your Godot version, your OS and, if possible, the steps to reproduce it.
-
-## License
-
-To be defined: add a `LICENSE` file (MIT for example) before publishing the repository.
