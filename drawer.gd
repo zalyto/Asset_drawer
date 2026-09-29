@@ -18,6 +18,7 @@ const STICKY_MAX := 3           # nombre max de dossiers parents collés en haut
 # _sticky_row_h() = hauteur réservée par ligne épinglée (toujours = à une ligne entière).
 const ICON_BUCKETS := [24, 64, 96, 160]
 const CFG_PATH := "res://.godot/asset_drawer.cfg"
+const L := preload("res://addons/asset_drawer/lang.gd")   # traductions FR / EN
 
 # --- Palette --------------------------------------------------------------
 # Principe : peu de teintes, une hiérarchie d'élévation claire (du plus sombre "fondation"
@@ -146,6 +147,8 @@ var _preview_cache := {}       # chemin -> miniature Godot (null = échec)
 var _preview_pending := {}     # chemins déjà envoyés au previewer
 var _path_index := {}          # chemin -> index dans _list
 var _dir_paths := {}           # chemins des dossiers affichés
+var _drop_list_idx := -1        # dossier de la liste surligné pendant un glisser-déposer
+var _drop_tree_item: TreeItem   # dossier de l'arbre surligné pendant un glisser-déposer
 var _tree_items := {}          # chemin normalisé -> TreeItem
 var _dirty := true
 var _tree_dirty := true
@@ -349,7 +352,7 @@ func _build_ui() -> void:
 	left_pad.add_child(_left_vbox)
 	left_panel.add_child(left_content)
 	var tab_group := ButtonGroup.new()
-	var tab_names := ["Dossiers", "Favoris", "Récents", "Sets"]
+	var tab_names := [L.t("Dossiers"), L.t("Favoris"), L.t("Récents"), "Sets"]
 	for i in range(tab_names.size()):
 		var btn := Button.new()
 		btn.text = tab_names[i]
@@ -368,8 +371,8 @@ func _build_ui() -> void:
 	_tree_tools = HBoxContainer.new()
 	_tree_tools.add_theme_constant_override("separation", 2)
 	_left_vbox.add_child(_tree_tools)
-	_add_tree_tool_button("CollapseTree", "⇤", "Tout replier", _collapse_all_folders)
-	_add_tree_tool_button("ExpandTree", "◎", "Localiser le dossier courant", _sync_tree_selection)
+	_add_tree_tool_button("CollapseTree", "⇤", L.t("Tout replier"), _collapse_all_folders)
+	_add_tree_tool_button("ExpandTree", "◎", L.t("Localiser le dossier courant"), _sync_tree_selection)
 
 	_tree = Tree.new()
 	_tree.hide_root = false
@@ -382,6 +385,7 @@ func _build_ui() -> void:
 		_collapsed[str(it.get_metadata(0))] = it.collapsed
 	)
 	_tree.gui_input.connect(_on_tree_gui_input)
+	_tree.set_drag_forwarding(_tree_get_drag, _tree_can_drop, _tree_drop)
 	_left_vbox.add_child(_tree)
 	_setup_sticky()
 
@@ -395,10 +399,10 @@ func _build_ui() -> void:
 	_left_vbox.add_child(_tab_list)
 
 	_btn_new_set = Button.new()
-	_btn_new_set.text = "+ Nouveau set"
+	_btn_new_set.text = L.t("+ Nouveau set")
 	_btn_new_set.visible = false
 	_btn_new_set.pressed.connect(func() -> void:
-		_prompt_string("Nouveau set", "mon_set", func(n: String) -> void:
+		_prompt_string(L.t("Nouveau set"), L.t("mon_set"), func(n: String) -> void:
 			if _valid_name(n) and not _sets.has(n):
 				_sets[n] = []
 				_save_cfg()
@@ -429,7 +433,7 @@ func _build_ui() -> void:
 		_list.deselect_all()
 		_on_selection_changed()
 	)
-	_list.set_drag_forwarding(_get_drag_data_fw, Callable(), Callable())
+	_list.set_drag_forwarding(_get_drag_data_fw, _list_can_drop, _list_drop)
 	_list.gui_input.connect(_on_list_gui_input)
 	_style_item_list(_list)
 	_list.resized.connect(_schedule_previews)
@@ -441,18 +445,18 @@ func _build_ui() -> void:
 	_empty_state.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_empty_state.visible = false
 	_empty_lbl = Label.new()
-	_empty_lbl.text = "Aucun asset"
+	_empty_lbl.text = L.t("Aucun asset")
 	_empty_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_empty_lbl.modulate = TEXT_SECONDARY
 	_empty_state.add_child(_empty_lbl)
 	_empty_link = LinkButton.new()
-	_empty_link.text = "Créer un dossier"
+	_empty_link.text = L.t("Créer un dossier")
 	_empty_link.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_empty_link.add_theme_color_override("font_color", accent)
 	_empty_link.pressed.connect(_create_folder)
 	_empty_state.add_child(_empty_link)
 	_empty_reset = Button.new()
-	_empty_reset.text = "Réinitialiser les filtres"
+	_empty_reset.text = L.t("Réinitialiser les filtres")
 	_empty_reset.visible = false
 	_empty_reset.focus_mode = Control.FOCUS_NONE
 	_empty_reset.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -519,7 +523,7 @@ func _build_paste_pop() -> void:
 
 	_paste_pop = Button.new()
 	_paste_pop.text = ""
-	_paste_pop.tooltip_text = "Coller la ressource copiée ici"
+	_paste_pop.tooltip_text = L.t("Coller la ressource copiée ici")
 	_paste_pop.custom_minimum_size = Vector2(22, 22)
 	_paste_pop.expand_icon = true
 	_paste_pop.visible = false
@@ -551,7 +555,7 @@ func _build_copy_pop() -> void:
 	var base := EditorInterface.get_base_control()
 	_copy_pop = Button.new()
 	_copy_pop.text = ""
-	_copy_pop.tooltip_text = "Copier la ressource"
+	_copy_pop.tooltip_text = L.t("Copier la ressource")
 	_copy_pop.custom_minimum_size = Vector2(22, 22)
 	_copy_pop.expand_icon = true
 	_copy_pop.visible = false
@@ -629,15 +633,15 @@ func _build_toolbar() -> Control:
 	row.add_child(_bar_panel(nav_row))
 
 	_btn_back = _icon_btn("Back", "<")
-	_btn_back.tooltip_text = "Précédent (bouton souris 4)"
+	_btn_back.tooltip_text = L.t("Précédent (bouton souris 4)")
 	_btn_back.pressed.connect(func() -> void: _hist_go(-1))
 	nav_row.add_child(_btn_back)
 	_btn_fwd = _icon_btn("Forward", ">")
-	_btn_fwd.tooltip_text = "Suivant (bouton souris 5)"
+	_btn_fwd.tooltip_text = L.t("Suivant (bouton souris 5)")
 	_btn_fwd.pressed.connect(func() -> void: _hist_go(1))
 	nav_row.add_child(_btn_fwd)
 	_btn_up = _icon_btn("ArrowUp", "^")
-	_btn_up.tooltip_text = "Dossier parent (Retour arrière)"
+	_btn_up.tooltip_text = L.t("Dossier parent (Retour arrière)")
 	_btn_up.pressed.connect(_go_up)
 	nav_row.add_child(_btn_up)
 
@@ -649,7 +653,7 @@ func _build_toolbar() -> Control:
 
 	# 3) Recherche : même fond / contour que les conteneurs
 	_search = LineEdit.new()
-	_search.placeholder_text = "Rechercher... (Ctrl+F)"
+	_search.placeholder_text = L.t("Rechercher... (Ctrl+F)")
 	_search.clear_button_enabled = true
 	_search.right_icon = EditorInterface.get_base_control().get_theme_icon("Search", "EditorIcons")
 	_search.custom_minimum_size = Vector2(170, BAR_H)
@@ -671,8 +675,8 @@ func _build_toolbar() -> Control:
 	view_box.add_theme_constant_override("separation", 2)
 	row.add_child(_bar_panel(view_box))
 	var view_group := ButtonGroup.new()
-	_btn_grid = _icon_btn("FileThumbnail,Grid,TileMap", "Grille")
-	_btn_grid.tooltip_text = "Vue grille"
+	_btn_grid = _icon_btn("FileThumbnail,Grid,TileMap", L.t("Grille"))
+	_btn_grid.tooltip_text = L.t("Vue grille")
 	_btn_grid.toggle_mode = true
 	_btn_grid.button_group = view_group
 	_btn_grid.pressed.connect(func() -> void:
@@ -682,8 +686,8 @@ func _build_toolbar() -> Control:
 		_refresh()
 	)
 	view_box.add_child(_btn_grid)
-	_btn_list = _icon_btn("FileList", "Liste")
-	_btn_list.tooltip_text = "Vue liste"
+	_btn_list = _icon_btn("FileList", L.t("Liste"))
+	_btn_list.tooltip_text = L.t("Vue liste")
 	_btn_list.toggle_mode = true
 	_btn_list.button_group = view_group
 	_btn_list.pressed.connect(func() -> void:
@@ -702,7 +706,7 @@ func _build_toolbar() -> Control:
 	_zoom.max_value = 160
 	_zoom.step = 8
 	_zoom.value = 80
-	_zoom.tooltip_text = "Taille des miniatures (Ctrl+molette)"
+	_zoom.tooltip_text = L.t("Taille des miniatures (Ctrl+molette)")
 	_zoom.custom_minimum_size.x = 80
 	_zoom.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_zoom.value_changed.connect(_on_zoom_changed)
@@ -714,8 +718,8 @@ func _build_toolbar() -> Control:
 	actions.add_theme_constant_override("separation", 2)
 	row.add_child(_bar_panel(actions))
 
-	_btn_details = _icon_btn("ControlLayout", "Détails")
-	_btn_details.tooltip_text = "Panneau de détails"
+	_btn_details = _icon_btn("ControlLayout", L.t("Détails"))
+	_btn_details.tooltip_text = L.t("Panneau de détails")
 	_btn_details.toggle_mode = true
 	_btn_details.toggled.connect(func(on: bool) -> void:
 		_details_visible = on
@@ -725,8 +729,8 @@ func _build_toolbar() -> Control:
 	_style_ghost_button(_btn_details, 5, 2, Color(accent_bar.r, accent_bar.g, accent_bar.b, 0.45))
 	actions.add_child(_btn_details)
 
-	_btn_pin = _icon_btn("Pin", "Épingler")
-	_btn_pin.tooltip_text = "Épingler (reste ouvert)"
+	_btn_pin = _icon_btn("Pin", L.t("Épingler"))
+	_btn_pin.tooltip_text = L.t("Épingler (reste ouvert)")
 	_btn_pin.toggle_mode = true
 	_btn_pin.toggled.connect(func(on: bool) -> void:
 		pinned = on
@@ -737,7 +741,7 @@ func _build_toolbar() -> Control:
 
 	var dock_btn := Button.new()
 	dock_btn.text = "DOCK"
-	dock_btn.tooltip_text = "Afficher ce dossier dans le dock Fichiers"
+	dock_btn.tooltip_text = L.t("Afficher ce dossier dans le dock Fichiers")
 	dock_btn.focus_mode = Control.FOCUS_NONE
 	dock_btn.add_theme_font_size_override("font_size", 10)
 	_style_ghost_button(dock_btn, 6, 2)
@@ -745,14 +749,14 @@ func _build_toolbar() -> Control:
 	actions.add_child(dock_btn)
 
 	var close_btn := _icon_btn("Close", "X")
-	close_btn.tooltip_text = "Fermer (Échap)"
+	close_btn.tooltip_text = L.t("Fermer (Échap)")
 	close_btn.pressed.connect(close)
 	actions.add_child(close_btn)
 
 	# Ligne 2 : filtres
 	var filters_box := HBoxContainer.new()
 	filters_box.add_theme_constant_override("separation", 3)
-	var filters := ["Tout", "Scènes", "Scripts", "Modèles", "Images", "Audio", "Shaders"]
+	var filters := [L.t("Tout"), L.t("Scènes"), "Scripts", L.t("Modèles"), "Images", "Audio", "Shaders"]
 	for i in range(filters.size()):
 		var btn := Button.new()
 		btn.text = filters[i]
@@ -805,8 +809,8 @@ func _build_details_panel() -> PanelContainer:
 	_lbl_modified = Label.new()
 	_lbl_uid = Label.new()
 	_add_meta_row(grid, "Type", _lbl_type)
-	_add_meta_row(grid, "Taille", _lbl_size)
-	_add_meta_row(grid, "Modifié", _lbl_modified)
+	_add_meta_row(grid, L.t("Taille"), _lbl_size)
+	_add_meta_row(grid, L.t("Modifié"), _lbl_modified)
 	_add_meta_row(grid, "UID", _lbl_uid)
 
 	var spacer := Control.new()
@@ -814,15 +818,15 @@ func _build_details_panel() -> PanelContainer:
 	dv.add_child(spacer)
 
 	_btn_open = Button.new()
-	_btn_open.text = "Ouvrir"
+	_btn_open.text = L.t("Ouvrir")
 	var accent: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
 	_btn_open.add_theme_stylebox_override("normal", _make_stylebox(accent, Color.TRANSPARENT, 4))
 	_btn_open.pressed.connect(func() -> void: _open_path(_context_path))
 	dv.add_child(_btn_open)
 
 	_btn_copy_res = Button.new()
-	_btn_copy_res.text = "Copier la ressource"
-	_btn_copy_res.tooltip_text = "Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou Alt+V au clavier)"
+	_btn_copy_res.text = L.t("Copier la ressource")
+	_btn_copy_res.tooltip_text = L.t("Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou Alt+V au clavier)")
 	# Même vert que le bouton "Coller la ressource" (COLOR_RES_ACTION) : les deux actions
 	# forment une paire visuelle (copier ici → coller là-bas).
 	_btn_copy_res.add_theme_stylebox_override("normal", _make_stylebox(COLOR_RES_ACTION, Color.TRANSPARENT, 4))
@@ -840,15 +844,15 @@ func _build_details_panel() -> PanelContainer:
 	dv.add_child(_btn_copy_res)
 
 	var btn_copy := Button.new()
-	btn_copy.text = "Copier le chemin"
+	btn_copy.text = L.t("Copier le chemin")
 	btn_copy.pressed.connect(func() -> void:
 		DisplayServer.clipboard_set(_context_path)
-		_flash("Chemin copié")
+		_flash(L.t("Chemin copié"))
 	)
 	dv.add_child(btn_copy)
 
 	_btn_fav = Button.new()
-	_btn_fav.text = "Ajouter aux favoris"
+	_btn_fav.text = L.t("Ajouter aux favoris")
 	_btn_fav.resized.connect(func() -> void: _btn_fav.pivot_offset = _btn_fav.size * 0.5)
 	_btn_fav.pressed.connect(func() -> void:
 		var was_fav := _is_fav(_context_path)
@@ -857,7 +861,7 @@ func _build_details_panel() -> PanelContainer:
 		_refresh()
 		_bounce_to(_btn_fav, Vector2(1.15, 1.15), 0.1)
 		get_tree().create_timer(0.1).timeout.connect(func() -> void: _bounce_to(_btn_fav, Vector2.ONE, 0.14))
-		_flash("Retiré des favoris" if was_fav else "Ajouté aux favoris")
+		_flash(L.t("Retiré des favoris") if was_fav else L.t("Ajouté aux favoris"))
 	)
 	dv.add_child(_btn_fav)
 	return panel
@@ -884,12 +888,12 @@ func _build_footer() -> Control:
 	_status.clip_text = true
 	footer.add_child(_status)
 
-	var btn_f := _icon_btn("Folder", "+Dossier")
-	btn_f.tooltip_text = "Nouveau dossier"
+	var btn_f := _icon_btn("Folder", L.t("+Dossier"))
+	btn_f.tooltip_text = L.t("Nouveau dossier")
 	btn_f.pressed.connect(_create_folder)
 	footer.add_child(btn_f)
 	var btn_sc := Button.new()
-	btn_sc.text = "+Scène"
+	btn_sc.text = L.t("+Scène")
 	_style_ghost_button(btn_sc, 6, 2)
 	btn_sc.pressed.connect(_create_scene)
 	footer.add_child(btn_sc)
@@ -1065,7 +1069,7 @@ func _refresh_left_tab_content() -> void:
 		for n in _sets.keys():
 			var idx := _tab_list.add_item("%s (%d)" % [n, (_sets[n] as Array).size()], base.get_theme_icon("Groups", "EditorIcons"))
 			_tab_list.set_item_metadata(idx, str(n))
-			_tab_list.set_item_tooltip(idx, "Clic droit : supprimer le set")
+			_tab_list.set_item_tooltip(idx, L.t("Clic droit : supprimer le set"))
 		return
 	if _active_left_tab == 1:
 		_sync_favorites()
@@ -1075,7 +1079,7 @@ func _refresh_left_tab_content() -> void:
 		var is_dir := DirAccess.dir_exists_absolute(path)
 		var idx := _tab_list.add_item(path.get_file() if path != "res://" else "res://", base.get_theme_icon("Folder" if is_dir else "File", "EditorIcons"))
 		_tab_list.set_item_metadata(idx, path)
-		_tab_list.set_item_tooltip(idx, path + ("\nClic droit : retirer" if _active_left_tab == 1 else ""))
+		_tab_list.set_item_tooltip(idx, path + (L.t("\nClic droit : retirer") if _active_left_tab == 1 else ""))
 		if is_dir:
 			var cn := _resolve_color(colors, path)
 			if cn in FOLDER_COLORS:
@@ -1100,7 +1104,7 @@ func _on_tab_list_clicked(idx: int, _at: Vector2, btn: int) -> void:
 		_toggle_favorite(meta)
 		_refresh()
 	elif _active_left_tab == 3:
-		_confirm("Supprimer le set", "Supprimer le set « %s » ? (les fichiers ne sont pas touchés)" % meta, func() -> void:
+		_confirm(L.t("Supprimer le set"), L.t("Supprimer le set « %s » ? (les fichiers ne sont pas touchés)") % meta, func() -> void:
 			_sets.erase(meta)
 			if _active_set == meta:
 				_active_set = ""
@@ -1359,17 +1363,17 @@ func _refresh() -> void:
 	_empty_reset.visible = false
 	if shown == 0:
 		if _selected_filter != 0:
-			_empty_lbl.text = "Aucun résultat avec ce filtre"
+			_empty_lbl.text = L.t("Aucun résultat avec ce filtre")
 			_empty_link.visible = false
 			_empty_reset.visible = true
 		elif not _active_set.is_empty():
-			_empty_lbl.text = "Set vide"
+			_empty_lbl.text = L.t("Set vide")
 			_empty_link.visible = false
 		elif not query.is_empty():
-			_empty_lbl.text = "Aucun résultat"
+			_empty_lbl.text = L.t("Aucun résultat")
 			_empty_link.visible = false
 		else:
-			_empty_lbl.text = "Aucun asset"
+			_empty_lbl.text = L.t("Aucun asset")
 			_empty_link.visible = true
 	_on_selection_changed(false)
 	_schedule_previews()
@@ -1389,13 +1393,13 @@ func _configure_zoom() -> void:
 		_zoom.max_value = 48
 		_zoom.step = 2
 		_zoom.value = clampf(_zoom_list, 16.0, 48.0)
-		_zoom.tooltip_text = "Taille des icônes en liste (Ctrl+molette)"
+		_zoom.tooltip_text = L.t("Taille des icônes en liste (Ctrl+molette)")
 	else:
 		_zoom.min_value = 48
 		_zoom.max_value = 160
 		_zoom.step = 8
 		_zoom.value = clampf(_zoom_grid, 48.0, 160.0)
-		_zoom.tooltip_text = "Taille des miniatures en grille (Ctrl+molette)"
+		_zoom.tooltip_text = L.t("Taille des miniatures en grille (Ctrl+molette)")
 	_zoom.set_block_signals(false)
 
 
@@ -1542,7 +1546,7 @@ func _on_selection_changed(select_in_dock: bool = true) -> void:
 		_update_details(sel[0])
 	else:
 		_context_path = sel[0]
-		_details_name.text = "%d éléments sélectionnés" % sel.size()
+		_details_name.text = L.t("%d éléments sélectionnés") % sel.size()
 		_details_path.text = ""
 		_lbl_type.text = "-"
 		_lbl_size.text = "-"
@@ -1556,12 +1560,12 @@ func _on_selection_changed(select_in_dock: bool = true) -> void:
 func _update_status_bar(_unused: int = -1) -> void:
 	var total := _list.item_count
 	var sel_count := _list.get_selected_items().size()
-	var where := current_dir if _active_set.is_empty() else "Set : " + _active_set
-	var txt := "%d élément%s" % [total, "s" if total > 1 else ""]
+	var where := current_dir if _active_set.is_empty() else L.t("Set : ") + _active_set
+	var txt := L.t("%d élément%s") % [total, "s" if total > 1 else ""]
 	if _truncated:
-		txt += " (limité à %d)" % MAX_ITEMS
+		txt += L.t(" (limité à %d)") % MAX_ITEMS
 	if sel_count > 0:
-		txt += " · %d sélectionné%s" % [sel_count, "s" if sel_count > 1 else ""]
+		txt += L.t(" · %d sélectionné%s") % [sel_count, L.sel_s(sel_count > 1)]
 	_status.text = txt + " · " + where
 
 
@@ -1594,15 +1598,17 @@ func _show_toast(msg: String, is_error: bool) -> void:
 func _rel_time(mtime: int) -> String:
 	var diff := int(Time.get_unix_time_from_system()) - mtime
 	if diff < 60:
-		return "à l'instant"
+		return L.t("à l'instant")
 	if diff < 3600:
-		return "il y a %d min" % (diff / 60)
+		return L.t("il y a %d min") % (diff / 60)
 	if diff < 86400:
-		return "il y a %d h" % (diff / 3600)
+		return L.t("il y a %d h") % (diff / 3600)
 	if diff < 172800:
-		return "hier"
+		return L.t("hier")
 	var d := Time.get_date_dict_from_unix_time(mtime)
-	return "%02d/%02d/%d" % [d.day, d.month, d.year]
+	if L.is_fr():
+		return "%02d/%02d/%d" % [d.day, d.month, d.year]
+	return "%d-%02d-%02d" % [d.year, d.month, d.day]
 
 
 func _update_details(path: String) -> void:
@@ -1611,9 +1617,9 @@ func _update_details(path: String) -> void:
 	_details_name.text = "res://" if path == "res://" else path.trim_suffix("/").get_file()
 	_details_path.text = path
 	if is_dir:
-		_lbl_type.text = "Dossier"
+		_lbl_type.text = L.t("Dossier")
 		var n := DirAccess.get_directories_at(path).size() + DirAccess.get_files_at(path).size()
-		_lbl_size.text = "%d élément%s" % [n, "s" if n > 1 else ""]
+		_lbl_size.text = L.t("%d élément%s") % [n, "s" if n > 1 else ""]
 		_lbl_modified.text = "-"
 		_lbl_uid.text = "-"
 		_preview.texture = _get_hd_folder_icon(96)
@@ -1631,11 +1637,11 @@ func _update_details(path: String) -> void:
 				var bytes := f.get_length()
 				f.close()
 				if bytes < 1024:
-					_lbl_size.text = "%d o" % bytes
+					_lbl_size.text = L.t("%d o") % bytes
 				elif bytes < 1024 * 1024:
-					_lbl_size.text = "%.1f Ko" % (bytes / 1024.0)
+					_lbl_size.text = L.t("%.1f Ko") % (bytes / 1024.0)
 				else:
-					_lbl_size.text = "%.1f Mo" % (bytes / (1024.0 * 1024.0))
+					_lbl_size.text = L.t("%.1f Mo") % (bytes / (1024.0 * 1024.0))
 			var mtime := FileAccess.get_modified_time(path)
 			if mtime > 0:
 				_lbl_modified.text = _rel_time(mtime)
@@ -1651,7 +1657,7 @@ func _update_details(path: String) -> void:
 				if not _preview_pending.has(path):
 					_preview_pending[path] = true
 					EditorInterface.get_resource_previewer().queue_resource_preview(path, self, "_on_preview", path)
-	_btn_fav.text = "Retirer des favoris" if _is_fav(path) else "Ajouter aux favoris"
+	_btn_fav.text = L.t("Retirer des favoris") if _is_fav(path) else L.t("Ajouter aux favoris")
 	if is_instance_valid(_btn_copy_res):
 		_btn_copy_res.visible = not is_dir
 
@@ -2272,7 +2278,7 @@ func _build_hint(base: Control) -> void:
 	_hint.z_as_relative = false
 	_hint.modulate.a = 0.65
 	_hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	_hint.tooltip_text = "Cliquer pour ouvrir le tiroir d'assets"
+	_hint.tooltip_text = L.t("Cliquer pour ouvrir le tiroir d'assets")
 	var hint_style := _make_stylebox(COLOR_HEADER, Color(accent.r, accent.g, accent.b, 0.7), 8, 1)
 	_hint.add_theme_stylebox_override("panel", hint_style)
 	var pad := _pad(10, 4)
@@ -2290,7 +2296,7 @@ func _build_hint(base: Control) -> void:
 	var key_pad := _pad(6, 1)
 	key.add_child(key_pad)
 	var key_lbl := Label.new()
-	key_lbl.text = "Ctrl+Espace"
+	key_lbl.text = L.t("Ctrl+Espace")
 	key_lbl.modulate = Color(1, 1, 1, 0.8)
 	key_lbl.add_theme_font_size_override("font_size", 11)
 	key_pad.add_child(key_lbl)
@@ -2602,6 +2608,185 @@ func _get_drag_data_fw(_at: Vector2) -> Variant:
 	return {"type": "files", "files": files}
 
 
+# ---------- Glisser-déposer : déplacer des fichiers / dossiers dans un dossier ----------
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_DRAG_END:
+		_clear_drop_hl()
+
+
+# Chemins contenus dans un glisser (tiroir ou dock Fichiers de Godot), sans « / » final
+func _drag_paths(data: Variant) -> PackedStringArray:
+	var out := PackedStringArray()
+	if data is Dictionary:
+		var t := str(data.get("type", ""))
+		if t == "files" or t == "files_and_dirs":
+			for f in data.get("files", []):
+				var p := str(f)
+				if p != "res://":
+					p = p.trim_suffix("/")
+				if not p.is_empty() and not out.has(p):
+					out.append(p)
+	return out
+
+
+func _norm_dir(p: String) -> String:
+	if p == "res://" or p == "res:/":
+		return "res://"
+	return p.trim_suffix("/")
+
+
+func _can_move_one(src: String, dst_dir: String) -> bool:
+	if src.is_empty() or src == "res://":
+		return false
+	if src.get_base_dir() == dst_dir or src == dst_dir:
+		return false
+	if _is_under(dst_dir, src):
+		return false      # un dossier ne peut pas entrer dans lui-même / un de ses sous-dossiers
+	return FileAccess.file_exists(src) or DirAccess.dir_exists_absolute(src)
+
+
+func _can_move_any(files: PackedStringArray, dst_dir: String) -> bool:
+	for f in files:
+		if _can_move_one(f, dst_dir):
+			return true
+	return false
+
+
+func _drop_hl_color() -> Color:
+	var acc: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
+	return Color(acc.r, acc.g, acc.b, 0.38)
+
+
+func _set_drop_hl_list(idx: int) -> void:
+	if _list == null or idx == _drop_list_idx:
+		return
+	if _drop_list_idx >= 0 and _drop_list_idx < _list.item_count:
+		_list.set_item_custom_bg_color(_drop_list_idx, Color(0, 0, 0, 0))
+	_drop_list_idx = idx
+	if idx >= 0 and idx < _list.item_count:
+		_list.set_item_custom_bg_color(idx, _drop_hl_color())
+
+
+func _set_drop_hl_tree(item: TreeItem) -> void:
+	if item == _drop_tree_item:
+		return
+	if _drop_tree_item != null and is_instance_valid(_drop_tree_item):
+		_drop_tree_item.clear_custom_bg_color(0)
+	_drop_tree_item = item
+	if item != null:
+		item.set_custom_bg_color(0, _drop_hl_color())
+
+
+func _clear_drop_hl() -> void:
+	_set_drop_hl_list(-1)
+	_set_drop_hl_tree(null)
+
+
+# Cible d'un dépôt dans la liste : dossier survolé, sinon le dossier courant (zone vide)
+func _list_drop_target(at: Vector2) -> Dictionary:
+	var idx := _list.get_item_at_position(at, true)
+	if idx >= 0:
+		var p := str(_list.get_item_metadata(idx))
+		if _dir_paths.has(p):
+			return {"dir": _norm_dir(p), "idx": idx}
+	# Zone vide (ou fichier) : on dépose dans le dossier courant, sauf en recherche / ensemble,
+	# où la liste mélange plusieurs dossiers.
+	if not _active_set.is_empty() or not _search.text.strip_edges().is_empty():
+		return {"dir": "", "idx": -1}
+	return {"dir": _norm_dir(current_dir), "idx": -1}
+
+
+func _list_can_drop(at: Vector2, data: Variant) -> bool:
+	var files := _drag_paths(data)
+	if files.is_empty():
+		_set_drop_hl_list(-1)
+		return false
+	var tgt := _list_drop_target(at)
+	var dst: String = tgt["dir"]
+	var ok := not dst.is_empty() and _can_move_any(files, dst)
+	_set_drop_hl_list(int(tgt["idx"]) if ok else -1)
+	return ok
+
+
+func _list_drop(at: Vector2, data: Variant) -> void:
+	var files := _drag_paths(data)
+	var dst: String = _list_drop_target(at)["dir"]
+	_clear_drop_hl()
+	if dst.is_empty():
+		return
+	_move_paths(files, dst)
+
+
+func _tree_drop_dir(at: Vector2) -> String:
+	var it := _tree.get_item_at_position(at)
+	if it == null:
+		return ""
+	return _norm_dir(str(it.get_metadata(0)))
+
+
+func _tree_can_drop(at: Vector2, data: Variant) -> bool:
+	var files := _drag_paths(data)
+	var it := _tree.get_item_at_position(at)
+	if files.is_empty() or it == null:
+		_set_drop_hl_tree(null)
+		return false
+	var ok := _can_move_any(files, _norm_dir(str(it.get_metadata(0))))
+	_set_drop_hl_tree(it if ok else null)
+	return ok
+
+
+func _tree_drop(at: Vector2, data: Variant) -> void:
+	var files := _drag_paths(data)
+	var dst := _tree_drop_dir(at)
+	_clear_drop_hl()
+	if dst.is_empty():
+		return
+	_move_paths(files, dst)
+
+
+# On peut aussi attraper un dossier dans l'arbre pour le déplacer dans un autre dossier
+func _tree_get_drag(at: Vector2) -> Variant:
+	var it := _tree.get_item_at_position(at)
+	if it == null:
+		return null
+	var p := _norm_dir(str(it.get_metadata(0)))
+	if p == "res://":
+		return null
+	var lbl := Label.new()
+	lbl.text = "  " + p.get_file() + "  "
+	lbl.add_theme_stylebox_override("normal", _make_stylebox(Color(0.10, 0.12, 0.15, 0.96), _drop_hl_color(), 6, 1))
+	set_drag_preview(lbl)
+	return {"type": "files", "files": PackedStringArray([p])}
+
+
+func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
+	var moved := 0
+	for p in files:
+		var src := p.trim_suffix("/")
+		if not _can_move_one(src, dst_dir):
+			continue
+		var dst := dst_dir.path_join(src.get_file())
+		if FileAccess.file_exists(dst) or DirAccess.dir_exists_absolute(dst):
+			_flash(L.t("« %s » existe déjà") % src.get_file(), true)
+			continue
+		if DirAccess.rename_absolute(src, dst) != OK:
+			_flash(L.t("Échec du déplacement"), true)
+			continue
+		for ext in [".import", ".uid"]:
+			if FileAccess.file_exists(src + ext):
+				DirAccess.rename_absolute(src + ext, dst + ext)
+		_rewrite_paths(src, dst)
+		current_dir = _swap_prefix(current_dir, src, dst)
+		for i in _history.size():
+			_history[i] = _swap_prefix(_history[i], src, dst)
+		moved += 1
+	if moved == 0:
+		return
+	_scan()
+	_flash(L.t("%d élément(s) déplacé(s)") % moved if moved > 1 else L.t("Élément déplacé"))
+
+
 # ---------- Menu contextuel ----------
 
 func _ctx_btn(title: String, callback: Callable, color: Color = Color.TRANSPARENT, icon_name: String = "") -> Button:
@@ -2633,18 +2818,18 @@ func _ctx_sep() -> void:
 ## de l'Inspecteur (ou Alt+V comme raccourci clavier).
 func _copy_resource_to_clipboard(path: String) -> void:
 	if DirAccess.dir_exists_absolute(path):
-		_flash("Impossible de copier un dossier comme ressource", true)
+		_flash(L.t("Impossible de copier un dossier comme ressource"), true)
 		return
 	if not ResourceLoader.exists(path):
-		_flash("Ce fichier n'est pas une ressource Godot", true)
+		_flash(L.t("Ce fichier n'est pas une ressource Godot"), true)
 		return
 	var res := load(path)
 	if res == null or not (res is Resource):
-		_flash("Impossible de charger la ressource", true)
+		_flash(L.t("Impossible de charger la ressource"), true)
 		return
 	_clip_resource = res
 	_clip_resource_name = path.get_file()
-	_flash("« %s » copiée — survolez un champ ressource de l'Inspecteur" % _clip_resource_name)
+	_flash(L.t("« %s » copiée — survolez un champ ressource de l'Inspecteur") % _clip_resource_name)
 
 
 ## Vrai si `res` correspond à au moins un des types autorisés par un EditorResourcePicker
@@ -2689,28 +2874,28 @@ func _picker_accepts_clip(picker: EditorResourcePicker) -> bool:
 ## le bouton "Coller" flottant qui apparaît au survol fait la même chose au clic.
 func try_paste_resource_at_mouse() -> bool:
 	if _clip_resource == null or not is_instance_valid(_clip_resource):
-		_flash("Aucune ressource copiée : clic droit sur un fichier → « Copier la ressource »", true)
+		_flash(L.t("Aucune ressource copiée : clic droit sur un fichier → « Copier la ressource »"), true)
 		return false
 	var vp := EditorInterface.get_base_control().get_viewport()
 	var hovered: Control = vp.gui_get_hovered_control() if vp else null
 	var picker := _picker_under(hovered)
 	if picker == null:
-		_flash("Survolez un champ ressource de l'Inspecteur puis Alt+V", true)
+		_flash(L.t("Survolez un champ ressource de l'Inspecteur puis Alt+V"), true)
 		return false
 	if not picker.editable:
-		_flash("Ce champ n'est pas modifiable", true)
+		_flash(L.t("Ce champ n'est pas modifiable"), true)
 		return false
 	var allowed := picker.get_allowed_types()
 	if not _resource_type_matches(_clip_resource, allowed):
 		var attendu := ", ".join(allowed) if not allowed.is_empty() else "?"
-		_flash("Type incompatible : ce champ attend « %s »" % attendu, true)
+		_flash(L.t("Type incompatible : ce champ attend « %s »") % attendu, true)
 		return false
 	# set_edited_resource() ne fait que rafraîchir l'affichage du champ : sans émettre
 	# resource_changed, l'Inspecteur ne répercute jamais la valeur sur la vraie propriété
 	# de l'objet (ex. MeshInstance3D.mesh), qui écrase alors l'affichage au rafraîchissement suivant.
 	picker.set_edited_resource(_clip_resource)
 	picker.emit_signal("resource_changed", _clip_resource)
-	_flash("« %s » collée dans l'Inspecteur" % _clip_resource_name)
+	_flash(L.t("« %s » collée dans l'Inspecteur") % _clip_resource_name)
 	return true
 
 
@@ -2793,7 +2978,7 @@ func _on_paste_pop_pressed() -> void:
 		return
 	_paste_target.set_edited_resource(_clip_resource)
 	_paste_target.emit_signal("resource_changed", _clip_resource)
-	_flash("« %s » collée dans l'Inspecteur" % _clip_resource_name)
+	_flash(L.t("« %s » collée dans l'Inspecteur") % _clip_resource_name)
 	_hide_paste_pop()
 
 
@@ -2902,7 +3087,7 @@ func _place_ctx_popup() -> void:
 
 func _add_color_row(target: String) -> void:
 	var color_lbl := Label.new()
-	color_lbl.text = "COULEUR DU DOSSIER"
+	color_lbl.text = L.t("COULEUR DU DOSSIER")
 	color_lbl.modulate = TEXT_MUTED
 	color_lbl.add_theme_font_size_override("font_size", 10)
 	_ctx_vbox.add_child(color_lbl)
@@ -2925,7 +3110,7 @@ func _add_color_row(target: String) -> void:
 	var rb := Button.new()
 	rb.custom_minimum_size = Vector2(16, 16)
 	rb.flat = false
-	rb.tooltip_text = "Couleur par défaut"
+	rb.tooltip_text = L.t("Couleur par défaut")
 	rb.add_theme_stylebox_override("normal", _make_stylebox(Color(0.2, 0.2, 0.2), Color.GRAY, 8, 1))
 	_add_press_bounce(rb, 1.25, 0.85)
 	rb.pressed.connect(func() -> void:
@@ -2948,33 +3133,33 @@ func _show_context() -> void:
 
 	if on_item:
 		if single:
-			_ctx_btn("Ouvrir", func() -> void: _open_path(target), Color.TRANSPARENT, "Load")
-		_ctx_btn("Afficher dans le dock Fichiers", func() -> void: _show_in_dock(target), Color.TRANSPARENT, "Filesystem")
-		_ctx_btn("Afficher dans l'explorateur", func() -> void:
+			_ctx_btn(L.t("Ouvrir"), func() -> void: _open_path(target), Color.TRANSPARENT, "Load")
+		_ctx_btn(L.t("Afficher dans le dock Fichiers"), func() -> void: _show_in_dock(target), Color.TRANSPARENT, "Filesystem")
+		_ctx_btn(L.t("Afficher dans l'explorateur"), func() -> void:
 			OS.shell_show_in_file_manager(ProjectSettings.globalize_path(target.trim_suffix("/")))
 		, Color.TRANSPARENT, "ExternalLink")
 		_ctx_sep()
-		_ctx_btn("Copier le chemin", func() -> void:
+		_ctx_btn(L.t("Copier le chemin"), func() -> void:
 			DisplayServer.clipboard_set("\n".join(sel))
-			_flash("Chemin copié")
+			_flash(L.t("Chemin copié"))
 		, Color.TRANSPARENT, "ActionCopy")
-		_ctx_btn("Copier le chemin absolu", func() -> void:
+		_ctx_btn(L.t("Copier le chemin absolu"), func() -> void:
 			var abs_paths: PackedStringArray = []
 			for p in sel:
 				abs_paths.append(ProjectSettings.globalize_path(p))
 			DisplayServer.clipboard_set("\n".join(abs_paths))
-			_flash("Chemin absolu copié")
+			_flash(L.t("Chemin absolu copié"))
 		, Color.TRANSPARENT, "ActionCopy")
 		if single and not is_dir:
-			_ctx_btn("Copier la ressource   (bouton Coller au survol)", func() -> void:
+			_ctx_btn(L.t("Copier la ressource   (bouton Coller au survol)"), func() -> void:
 				_copy_resource_to_clipboard(target)
 			, COLOR_RES_ACTION, "ActionCopy")
 		if single and not is_dir and ResourceLoader.has_method("get_resource_uid"):
-			_ctx_btn("Copier l'UID", func() -> void:
+			_ctx_btn(L.t("Copier l'UID"), func() -> void:
 				var uid: int = ResourceLoader.call("get_resource_uid", target)
 				if uid != -1:
 					DisplayServer.clipboard_set(ResourceUID.id_to_text(uid))
-					_flash("UID copié")
+					_flash(L.t("UID copié"))
 			, Color.TRANSPARENT, "ActionCopy")
 		_ctx_sep()
 
@@ -2982,41 +3167,41 @@ func _show_context() -> void:
 		var in_set := not _active_set.is_empty()
 		var here := current_dir
 		if not in_set:
-			_ctx_btn("Ouvrir le dossier dans l'explorateur", func() -> void:
+			_ctx_btn(L.t("Ouvrir le dossier dans l'explorateur"), func() -> void:
 				OS.shell_show_in_file_manager(ProjectSettings.globalize_path(here))
 			, Color.TRANSPARENT, "ExternalLink")
-			_ctx_btn("Afficher dans le dock Fichiers", func() -> void: _show_in_dock(here), Color.TRANSPARENT, "Filesystem")
-			_ctx_btn("Copier le chemin du dossier", func() -> void:
+			_ctx_btn(L.t("Afficher dans le dock Fichiers"), func() -> void: _show_in_dock(here), Color.TRANSPARENT, "Filesystem")
+			_ctx_btn(L.t("Copier le chemin du dossier"), func() -> void:
 				DisplayServer.clipboard_set(here)
-				_flash("Chemin copié")
+				_flash(L.t("Chemin copié"))
 			, Color.TRANSPARENT, "ActionCopy")
-			_ctx_btn("Copier le chemin absolu du dossier", func() -> void:
+			_ctx_btn(L.t("Copier le chemin absolu du dossier"), func() -> void:
 				DisplayServer.clipboard_set(ProjectSettings.globalize_path(here))
-				_flash("Chemin absolu copié")
+				_flash(L.t("Chemin absolu copié"))
 			, Color.TRANSPARENT, "ActionCopy")
 			if here != "res://":
-				_ctx_btn("Retirer le dossier des favoris" if _is_fav(here) else "Ajouter le dossier aux favoris", func() -> void:
+				_ctx_btn(L.t("Retirer le dossier des favoris") if _is_fav(here) else L.t("Ajouter le dossier aux favoris"), func() -> void:
 					var was_fav := _is_fav(here)
 					_toggle_favorite(here)
 					_refresh()
-					_flash("Retiré des favoris" if was_fav else "Ajouté aux favoris")
+					_flash(L.t("Retiré des favoris") if was_fav else L.t("Ajouté aux favoris"))
 				, Color.TRANSPARENT, "Favorites")
 			_ctx_sep()
-		_ctx_btn("Actualiser", func() -> void:
+		_ctx_btn(L.t("Actualiser"), func() -> void:
 			_scan()
 			_refresh()
-			_flash("Actualisé")
+			_flash(L.t("Actualisé"))
 		, Color.TRANSPARENT, "Reload")
-		_ctx_btn("Passer en vue grille" if _view_list else "Passer en vue liste", func() -> void:
+		_ctx_btn(L.t("Passer en vue grille") if _view_list else L.t("Passer en vue liste"), func() -> void:
 			var btn: Button = _btn_grid if _view_list else _btn_list
 			btn.button_pressed = true
 			btn.pressed.emit()
 		, Color.TRANSPARENT, "Grid" if _view_list else "FileList")
 		_ctx_sep()
 
-	_ctx_btn("Nouveau dossier", _create_folder, Color.TRANSPARENT, "Folder")
-	_ctx_btn("Nouvelle scène", _create_scene, Color.TRANSPARENT, "PackedScene")
-	_ctx_btn("Nouveau script", _create_script, Color.TRANSPARENT, "Script")
+	_ctx_btn(L.t("Nouveau dossier"), _create_folder, Color.TRANSPARENT, "Folder")
+	_ctx_btn(L.t("Nouvelle scène"), _create_scene, Color.TRANSPARENT, "PackedScene")
+	_ctx_btn(L.t("Nouveau script"), _create_script, Color.TRANSPARENT, "Script")
 
 	if not on_item and _active_set.is_empty() and current_dir != "res://":
 		_ctx_sep()
@@ -3025,18 +3210,18 @@ func _show_context() -> void:
 	if on_item:
 		_ctx_sep()
 		if single:
-			_ctx_btn("Renommer (F2)", func() -> void: _rename(target), Color.TRANSPARENT, "Rename")
-		_ctx_btn("Dupliquer (Ctrl+D)", func() -> void: _duplicate(sel), Color.TRANSPARENT, "Duplicate")
-		_ctx_btn("Retirer des favoris" if _is_fav(target) else "Ajouter aux favoris", func() -> void:
+			_ctx_btn(L.t("Renommer (F2)"), func() -> void: _rename(target), Color.TRANSPARENT, "Rename")
+		_ctx_btn(L.t("Dupliquer (Ctrl+D)"), func() -> void: _duplicate(sel), Color.TRANSPARENT, "Duplicate")
+		_ctx_btn(L.t("Retirer des favoris") if _is_fav(target) else L.t("Ajouter aux favoris"), func() -> void:
 			var was_fav := _is_fav(target)
 			for p in sel:
 				_toggle_favorite(p)
 			_refresh()
-			_flash("Retiré des favoris" if was_fav else "Ajouté aux favoris")
+			_flash(L.t("Retiré des favoris") if was_fav else L.t("Ajouté aux favoris"))
 		, Color.TRANSPARENT, "Favorites")
-		_ctx_btn("Ajouter à un set...", func() -> void:
-			var default_name := str(_sets.keys()[0]) if not _sets.is_empty() else "mon_set"
-			_prompt_string("Ajouter au set", default_name, func(n: String) -> void:
+		_ctx_btn(L.t("Ajouter à un set..."), func() -> void:
+			var default_name := str(_sets.keys()[0]) if not _sets.is_empty() else L.t("mon_set")
+			_prompt_string(L.t("Ajouter au set"), default_name, func(n: String) -> void:
 				if not _valid_name(n):
 					return
 				var arr: Array = _sets.get(n, [])
@@ -3046,11 +3231,11 @@ func _show_context() -> void:
 				_sets[n] = arr
 				_save_cfg()
 				_refresh_left_tab_content()
-				_flash("Ajouté au set « %s »" % n)
+				_flash(L.t("Ajouté au set « %s »") % n)
 			)
 		, Color.TRANSPARENT, "Groups")
 		if not _active_set.is_empty():
-			_ctx_btn("Retirer de ce set", func() -> void:
+			_ctx_btn(L.t("Retirer de ce set"), func() -> void:
 				var arr: Array = _sets.get(_active_set, [])
 				for p in sel:
 					arr.erase(p)
@@ -3059,7 +3244,7 @@ func _show_context() -> void:
 				_refresh()
 			)
 		if not is_dir:
-			_ctx_btn("Réimporter", func() -> void:
+			_ctx_btn(L.t("Réimporter"), func() -> void:
 				var files: PackedStringArray = []
 				for p in sel:
 					if not DirAccess.dir_exists_absolute(p):
@@ -3070,7 +3255,7 @@ func _show_context() -> void:
 			_ctx_sep()
 			_add_color_row(target)
 		_ctx_sep()
-		_ctx_btn("Supprimer (Suppr)", func() -> void: _confirm_delete(sel), COLOR_DANGER, "Remove")
+		_ctx_btn(L.t("Supprimer (Suppr)"), func() -> void: _confirm_delete(sel), COLOR_DANGER, "Remove")
 
 	_place_ctx_popup()
 	# PopupPanel est une Window (pas de "scale"/"modulate") : on anime son contenu à la place.
@@ -3086,7 +3271,7 @@ func _valid_name(n: String) -> bool:
 		return false
 	for ch in ["/", "\\", ":", "*", "?", "\"", "<", ">", "|"]:
 		if n.contains(ch):
-			_flash("Nom invalide : caractère « %s » interdit" % ch, true)
+			_flash(L.t("Nom invalide : caractère « %s » interdit") % ch, true)
 			return false
 	return true
 
@@ -3111,12 +3296,12 @@ func _target_dir() -> String:
 
 func _create_folder() -> void:
 	var dir := _target_dir()
-	_prompt_string("Nouveau dossier", _unique_path(dir, "nouveau_dossier", "").get_file(), func(n: String) -> void:
+	_prompt_string(L.t("Nouveau dossier"), _unique_path(dir, L.t("nouveau_dossier"), "").get_file(), func(n: String) -> void:
 		if not _valid_name(n):
 			return
 		var p := dir.path_join(n)
 		if DirAccess.dir_exists_absolute(p) or FileAccess.file_exists(p):
-			_flash("« %s » existe déjà" % n, true)
+			_flash(L.t("« %s » existe déjà") % n, true)
 			return
 		DirAccess.make_dir_recursive_absolute(p)
 		_pending_select = p
@@ -3126,12 +3311,12 @@ func _create_folder() -> void:
 
 func _create_scene() -> void:
 	var dir := _target_dir()
-	_prompt_string("Nouvelle scène", _unique_path(dir, "nouvelle_scene", ".tscn").get_file(), func(n: String) -> void:
+	_prompt_string(L.t("Nouvelle scène"), _unique_path(dir, L.t("nouvelle_scene"), ".tscn").get_file(), func(n: String) -> void:
 		if not _valid_name(n):
 			return
 		var p := dir.path_join(n if n.ends_with(".tscn") else n + ".tscn")
 		if FileAccess.file_exists(p):
-			_flash("« %s » existe déjà" % n, true)
+			_flash(L.t("« %s » existe déjà") % n, true)
 			return
 		var node := Node2D.new()
 		node.name = p.get_file().get_basename().to_pascal_case()
@@ -3146,12 +3331,12 @@ func _create_scene() -> void:
 
 func _create_script() -> void:
 	var dir := _target_dir()
-	_prompt_string("Nouveau script", _unique_path(dir, "nouveau_script", ".gd").get_file(), func(n: String) -> void:
+	_prompt_string(L.t("Nouveau script"), _unique_path(dir, L.t("nouveau_script"), ".gd").get_file(), func(n: String) -> void:
 		if not _valid_name(n):
 			return
 		var p := dir.path_join(n if n.ends_with(".gd") else n + ".gd")
 		if FileAccess.file_exists(p):
-			_flash("« %s » existe déjà" % n, true)
+			_flash(L.t("« %s » existe déjà") % n, true)
 			return
 		var f := FileAccess.open(p, FileAccess.WRITE)
 		if f:
@@ -3164,17 +3349,17 @@ func _create_script() -> void:
 
 func _rename(path: String) -> void:
 	var src := path.trim_suffix("/")
-	_prompt_string("Renommer", src.get_file(), func(n: String) -> void:
+	_prompt_string(L.t("Renommer"), src.get_file(), func(n: String) -> void:
 		if not _valid_name(n):
 			return
 		var dst := src.get_base_dir().path_join(n)
 		if dst == src:
 			return
 		if FileAccess.file_exists(dst) or DirAccess.dir_exists_absolute(dst):
-			_flash("« %s » existe déjà" % n, true)
+			_flash(L.t("« %s » existe déjà") % n, true)
 			return
 		if DirAccess.rename_absolute(src, dst) != OK:
-			_flash("Échec du renommage", true)
+			_flash(L.t("Échec du renommage"), true)
 			return
 		for ext in [".import", ".uid"]:
 			if FileAccess.file_exists(src + ext):
@@ -3185,7 +3370,7 @@ func _rename(path: String) -> void:
 			_history[i] = _swap_prefix(_history[i], src, dst)
 		_pending_select = dst
 		_scan()
-		_flash("Renommé en « %s »" % n)
+		_flash(L.t("Renommé en « %s »") % n)
 	)
 
 
@@ -3195,16 +3380,16 @@ func _duplicate(paths: PackedStringArray) -> void:
 		var src := p.trim_suffix("/")
 		var dir := src.get_base_dir()
 		if DirAccess.dir_exists_absolute(src):
-			var dst := _unique_path(dir, src.get_file() + "_copie", "")
+			var dst := _unique_path(dir, src.get_file() + L.t("_copie"), "")
 			_copy_dir(src, dst)
 			last = dst
 		else:
-			var dst := _unique_path(dir, src.get_file().get_basename() + "_copie", "." + src.get_extension())
+			var dst := _unique_path(dir, src.get_file().get_basename() + L.t("_copie"), "." + src.get_extension())
 			_copy_file(src, dst)
 			last = dst
 	_pending_select = last
 	_scan()
-	_flash("%d élément(s) dupliqué(s)" % paths.size() if paths.size() > 1 else "Élément dupliqué")
+	_flash(L.t("%d élément(s) dupliqué(s)") % paths.size() if paths.size() > 1 else L.t("Élément dupliqué"))
 
 
 func _copy_dir(src: String, dst: String) -> void:
@@ -3239,16 +3424,16 @@ func _confirm_delete(paths: PackedStringArray) -> void:
 	var names: PackedStringArray = []
 	for p in paths:
 		names.append(p.trim_suffix("/").get_file())
-	var txt := "Envoyer à la corbeille :\n" + "\n".join(names.slice(0, 8))
+	var txt := L.t("Envoyer à la corbeille :\n") + "\n".join(names.slice(0, 8))
 	if names.size() > 8:
 		txt += "\n... (+%d)" % (names.size() - 8)
-	_confirm("Supprimer", txt, func() -> void:
+	_confirm(L.t("Supprimer"), txt, func() -> void:
 		var ok_count := 0
 		for p in paths:
 			var src := p.trim_suffix("/")
 			var err := OS.move_to_trash(ProjectSettings.globalize_path(src))
 			if err != OK:
-				_flash("Impossible de mettre « %s » à la corbeille" % src.get_file(), true)
+				_flash(L.t("Impossible de mettre « %s » à la corbeille") % src.get_file(), true)
 				continue
 			for ext in [".import", ".uid"]:
 				if FileAccess.file_exists(src + ext):
@@ -3258,7 +3443,7 @@ func _confirm_delete(paths: PackedStringArray) -> void:
 		_save_cfg()
 		_scan()
 		if ok_count > 0:
-			_flash("%d élément(s) envoyé(s) à la corbeille" % ok_count if ok_count > 1 else "Envoyé à la corbeille")
+			_flash(L.t("%d élément(s) envoyé(s) à la corbeille") % ok_count if ok_count > 1 else L.t("Envoyé à la corbeille"))
 	)
 
 
@@ -3318,8 +3503,8 @@ func _rewrite_paths(src: String, dst: String) -> void:
 func _prompt_string(title: String, val: String, on_ok: Callable) -> void:
 	var d := ConfirmationDialog.new()
 	d.title = title
-	d.ok_button_text = "Valider"
-	d.cancel_button_text = "Annuler"
+	d.ok_button_text = L.t("Valider")
+	d.cancel_button_text = L.t("Annuler")
 	var le := LineEdit.new()
 	le.text = val
 	le.custom_minimum_size.x = 320
@@ -3340,8 +3525,8 @@ func _confirm(title: String, text: String, on_ok: Callable) -> void:
 	var d := ConfirmationDialog.new()
 	d.title = title
 	d.dialog_text = text
-	d.ok_button_text = "Confirmer"
-	d.cancel_button_text = "Annuler"
+	d.ok_button_text = L.t("Confirmer")
+	d.cancel_button_text = L.t("Annuler")
 	d.confirmed.connect(func() -> void: on_ok.call())
 	d.visibility_changed.connect(func() -> void:
 		if not d.visible:

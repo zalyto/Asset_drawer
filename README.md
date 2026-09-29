@@ -1,195 +1,208 @@
 # Asset Drawer
 
-> Un tiroir d'assets façon **Content Drawer d'Unreal Engine** pour Godot 4.
-> Appuyez sur **Ctrl+Espace** : le tiroir glisse depuis le bas de l'éditeur. Parcourez, cherchez, glissez-déposez, puis refermez.
+
+
+> An asset drawer inspired by **Unreal Engine's Content Drawer**, for Godot 4.
+> Press **Ctrl+Space** and the drawer slides up from the bottom of the editor. Browse, search, drag and drop, then close it.
 
 ![Godot 4.2+](https://img.shields.io/badge/Godot-4.2%2B-478cbf?logo=godotengine&logoColor=white)
-![Version](https://img.shields.io/badge/version-3.5-blue)
+![Version](https://img.shields.io/badge/version-3.6-blue)
 ![Type](https://img.shields.io/badge/type-editor%20plugin-lightgrey)
 
-<!-- Ajoutez ici une capture d'écran ou un GIF :
+<!-- Add a screenshot or GIF here:
 ![Asset Drawer](docs/screenshot.png)
 -->
 
 ---
 
-## Sommaire
+## Table of contents
 
-- [Pourquoi](#pourquoi)
+- [Why](#why)
 - [Installation](#installation)
-- [Utilisation rapide](#utilisation-rapide)
-- [Raccourcis](#raccourcis)
-- [Fonctionnalités](#fonctionnalités)
-- [Menu clic droit](#menu-clic-droit)
-- [Copier / coller une ressource](#copier--coller-une-ressource)
-- [Personnalisation](#personnalisation)
-- [Fichiers de configuration](#fichiers-de-configuration)
-- [Dépannage](#dépannage)
-- [Contribuer](#contribuer)
+- [Quick start](#quick-start)
+- [Shortcuts](#shortcuts)
+- [Features](#features)
+- [Right-click menu](#right-click-menu)
+- [Copy / paste a resource](#copy--paste-a-resource)
+- [Export an image of the drawer](#export-an-image-of-the-drawer)
+- [Customization](#customization)
+- [Configuration files](#configuration-files)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
 
 ---
 
-## Pourquoi
+## Why
 
-Le dock Fichiers de Godot est pratique, mais il occupe de la place en permanence. Asset Drawer reprend l'idée du Content Drawer d'Unreal : un explorateur de fichiers qui **apparaît à la demande**, recouvre le bas de l'éditeur, puis disparaît quand vous n'en avez plus besoin. Il reste relié au reste de Godot : couleurs de dossiers, favoris, glisser-déposer vers la scène ou l'Inspecteur.
+Godot's FileSystem dock is handy, but it takes up space permanently. Asset Drawer brings the idea of Unreal's Content Drawer to Godot: a file browser that **appears on demand**, covers the bottom of the editor, then disappears when you no longer need it. It stays connected to the rest of Godot: folder colors, favorites, and drag and drop into the scene or the Inspector.
 
 ## Installation
 
-1. Copiez le dossier `asset_drawer` dans le dossier `res://addons/` de votre projet :
+1. Copy the `asset_drawer` folder into your project's `res://addons/` folder:
    ```
    res://addons/asset_drawer/
    ├── plugin.cfg
    ├── plugin.gd
    └── drawer.gd
    ```
-2. Ouvrez **Projet → Paramètres du projet → Plugins** et activez **Asset Drawer**.
-3. Ouvrez le tiroir avec **Ctrl+Espace**, avec le bouton de la barre d'outils, ou via **Projet → Outils → Asset Drawer**.
+2. Open **Project → Project Settings → Plugins** and enable **Asset Drawer**.
+3. Open the drawer with **Ctrl+Space**, with the toolbar button, or from **Project → Tools → Asset Drawer**.
 
-> Compatible **Godot 4.2 et versions suivantes**.
+> Compatible with **Godot 4.2 and later**.
 
-## Utilisation rapide
+## Quick start
 
-| Je veux… | Je fais… |
+| I want to… | I do… |
 |---|---|
-| Ouvrir / fermer le tiroir | `Ctrl+Espace` |
-| Garder le tiroir ouvert | Cliquer sur l'épingle de la barre du haut |
-| Redimensionner la hauteur | Tirer la poignée en haut du tiroir |
-| Ajouter un asset à la scène | Le glisser depuis le tiroir vers la scène |
-| Assigner une ressource dans l'Inspecteur | La glisser sur le champ correspondant |
-| Retrouver un fichier | `Ctrl+F` puis taper le nom |
+| Open / close the drawer | `Ctrl+Space` |
+| Keep the drawer open | Click the pin in the top bar |
+| Resize the height | Drag the handle at the top of the drawer |
+| Add an asset to the scene | Drag it from the drawer into the scene |
+| Assign a resource in the Inspector | Drag it onto the matching field |
+| Find a file | `Ctrl+F`, then type the name |
 
-Par défaut, un clic en dehors du tiroir le ferme, sauf s'il est épinglé.
+By default, clicking outside the drawer closes it, unless it is pinned.
 
-## Raccourcis
+## Shortcuts
 
-| Raccourci | Action |
+| Shortcut | Action |
 |---|---|
-| `Ctrl+Espace` | Ouvrir / fermer le tiroir |
-| `Échap` | Fermer le tiroir (sauf s'il est épinglé) ou le menu contextuel |
-| `Ctrl+F` | Aller dans la recherche |
-| `F2` | Renommer |
-| `Ctrl+D` | Dupliquer |
-| `Suppr` | Envoyer à la corbeille (avec confirmation) |
-| `Retour arrière` | Dossier parent |
-| `Entrée` | Ouvrir l'élément sélectionné |
-| Double-clic | Ouvrir (scène, script, ressource, dossier) |
-| `Ctrl` + molette | Zoom des miniatures |
-| Boutons souris précédent / suivant | Historique arrière / avant |
-| `Alt+V` | Coller la ressource copiée sur le champ de l'Inspecteur survolé |
+| `Ctrl+Space` | Open / close the drawer |
+| `Esc` | Close the drawer (unless pinned) or the context menu |
+| `Ctrl+F` | Focus the search box |
+| `F2` | Rename |
+| `Ctrl+D` | Duplicate |
+| `Delete` | Move to trash (with confirmation) |
+| `Backspace` | Parent folder |
+| `Enter` | Open the selected item |
+| Double-click | Open (scene, script, resource, folder) |
+| `Ctrl` + mouse wheel | Thumbnail zoom |
+| Mouse back / forward buttons | Back / forward history |
+| `Alt+V` | Paste the copied resource onto the hovered Inspector field |
 
-Le raccourci d'ouverture laisse l'autocomplétion du script tranquille quand un `TextEdit` / `CodeEdit` a le focus.
+The open shortcut leaves script autocompletion alone when a `TextEdit` / `CodeEdit` has focus.
 
-## Fonctionnalités
+## Features
 
 ### Interface
 
-- Tiroir flottant avec **marges, coins arrondis, contour accent et ombre** pour se détacher de l'éditeur
-- Animation d'ouverture depuis le bas (léger rebond et halo sur le contour), fermeture animée
-- Hauteur redimensionnable, mémorisée entre les sessions
-- Mode **épinglé** : le tiroir reste ouvert
-- Panneau de **détails** avec aperçu (type, taille, date, UID), masquable
-- Barre de statut (nombre d'éléments, sélection, chemin)
-- Notifications animées (vert = succès, rouge = erreur) pour confirmer les actions
-- Micro-animations sur les boutons, sélection et survol arrondis dans la liste
+- Floating drawer with **margins, rounded corners, an accent outline and a shadow** so it stands out from the editor
+- Slide-up opening animation (slight bounce and glow on the outline), animated closing
+- Resizable height, remembered between sessions
+- **Pinned** mode: the drawer stays open
+- **Details** panel with preview (type, size, date, UID), can be hidden
+- Status bar (item count, selection, path)
+- Animated notifications (green = success, red = error) to confirm actions
+- Micro-animations on buttons, rounded selection and hover in the list
 
 ### Navigation
 
-- **Arbre des dossiers** avec dossiers parents épinglés en haut quand on descend, un seul clic pour ouvrir / déplier, boutons « Tout replier » et « Localiser le dossier courant »
-- **Fil d'Ariane** cliquable et historique arrière / avant
-- Onglets latéraux : **Dossiers**, **Favoris**, **Récents**, **Sets**
-- Favoris synchronisés avec ceux du dock Fichiers de Godot
+- **Folder tree** with parent folders pinned to the top as you go deeper, single click to open / expand, "Collapse all" and "Locate current folder" buttons
+- Clickable **breadcrumb** and back / forward history
+- Side tabs: **Folders**, **Favorites**, **Recents**, **Sets**
+- Favorites synced with Godot's FileSystem dock
 
-### Recherche et affichage
+### Search and display
 
-- Recherche récursive dans le dossier courant (avec anti-rebond)
-- Filtres par type : Tout, Scènes, Scripts, Modèles, Images, Audio, Shaders
-- Vue **grille** ou **liste**, avec un niveau de zoom mémorisé pour chaque vue
-- Miniatures HD générées de façon asynchrone par Godot, chargées seulement pour les éléments visibles
-- Plafond d'éléments affichés (`MAX_ITEMS`) pour rester fluide sur les gros dossiers
+- Recursive search inside the current folder (debounced)
+- Type filters: All, Scenes, Scripts, Models, Images, Audio, Shaders
+- **Grid** or **list** view, with a separate zoom level remembered for each view
+- HD thumbnails generated asynchronously by Godot, loaded only for visible items
+- Cap on displayed items (`MAX_ITEMS`) to stay smooth in large folders
 
-### Couleurs de dossiers
+### Folder colors
 
-- Utilise les **couleurs personnalisées du dock Fichiers** de Godot (réglage `file_customization/folder_colors`)
-- Les sous-dossiers **héritent** de la couleur de leur parent, comme dans le dock Fichiers
-- Modifiables directement depuis le tiroir : clic droit sur un dossier, rangée de pastilles de couleur
+- Uses the **custom colors from Godot's FileSystem dock** (the `file_customization/folder_colors` setting)
+- Subfolders **inherit** their parent's color, like in the FileSystem dock
+- Editable straight from the drawer: right-click a folder, then pick from the color swatches
 
-### Gestion des fichiers
+### File management
 
-- Nouveau dossier, nouvelle scène, nouveau script (nom par défaut unique, jamais d'écrasement)
-- Renommer : les fichiers `.import` / `.uid` associés suivent, ainsi que favoris, sets et couleurs
-- Dupliquer fichiers et dossiers, y compris récursivement
-- Supprimer vers la **corbeille** de l'OS, avec confirmation
-- Réimporter
-- Copier le chemin, le chemin absolu ou l'UID
-- Afficher dans le dock Fichiers ou dans l'explorateur de l'OS
+- New folder, new scene, new script (unique default name, never overwrites)
+- Rename: the matching `.import` / `.uid` files follow, along with favorites, sets and colors
+- Duplicate files and folders, including recursively
+- Delete to the OS **trash**, with confirmation
+- Reimport
+- Copy path, absolute path or UID
+- Show in the FileSystem dock or in the OS file manager
 
 ### Sets
 
-Des collections d'assets nommées, comme les Collections d'Unreal : regroupez des fichiers de dossiers différents dans un même set et retrouvez-les dans l'onglet **Sets**. Clic droit sur un set pour le supprimer (les fichiers ne sont pas touchés).
+Named collections of assets, like Unreal's Collections: group files from different folders into one set and find them in the **Sets** tab. Right-click a set to delete it (the files are not touched).
 
-### Glisser-déposer
+### Drag and drop
 
-Glissez un ou plusieurs assets vers la scène, l'arbre de scène ou les champs de l'Inspecteur, comme depuis le dock Fichiers.
+Drag one or more assets into the scene, the scene tree or Inspector fields, just like from the FileSystem dock.
 
-## Menu clic droit
+## Right-click menu
 
-**Sur un fichier ou un dossier** : ouvrir, afficher dans le dock / l'explorateur, copier chemin / chemin absolu / UID, copier la ressource, nouveau dossier / scène / script, renommer, dupliquer, favoris, ajouter à un set, réimporter, couleur du dossier, supprimer.
+**On a file or folder**: open, show in dock / file manager, copy path / absolute path / UID, copy resource, new folder / scene / script, rename, duplicate, favorites, add to a set, reimport, folder color, delete.
 
-**Dans le vide** (options du dossier courant) :
+**On empty space** (current folder options):
 
-- Ouvrir le dossier dans l'explorateur
-- Afficher dans le dock Fichiers
-- Copier le chemin / le chemin absolu du dossier
-- Ajouter / retirer le dossier des favoris
-- Actualiser
-- Passer en vue grille ou liste
-- Nouveau dossier / scène / script
-- Couleur du dossier
+- Open the folder in the file manager
+- Show in the FileSystem dock
+- Copy the folder path / absolute path
+- Add / remove the folder from favorites
+- Refresh
+- Switch to grid or list view
+- Export an image of the drawer (transparent PNG or green background)
+- New folder / scene / script
+- Folder color
 
-## Copier / coller une ressource
+## Copy / paste a resource
 
-1. Survolez une ressource dans le tiroir : un petit bouton vert **Copier** apparaît (ou clic droit → « Copier la ressource »).
-2. Survolez un champ ressource de l'Inspecteur (par exemple le `Mesh` d'un `MeshInstance3D`) : un bouton **Coller** apparaît.
-3. Cliquez dessus, ou utilisez `Alt+V`. Le tiroir n'a pas besoin d'être ouvert pour coller.
+1. Hover a resource in the drawer: a small green **Copy** button appears (or right-click → "Copy resource").
+2. Hover a resource field in the Inspector (for example the `Mesh` of a `MeshInstance3D`): a **Paste** button appears.
+3. Click it, or use `Alt+V`. The drawer does not need to be open to paste.
 
-## Personnalisation
+## Export an image of the drawer
 
-Les réglages d'apparence sont des constantes en haut de `drawer.gd` :
+Handy for posters, renders or your own README. Right-click on empty space in the drawer:
 
-| Constante | Rôle | Défaut |
+- **Export image (transparent PNG)**: the drawer is captured on black, then on white, and the opacity of each pixel is computed from the difference. Rounded corners and shadow come out clean, with no cutting out needed. It takes a few seconds to process.
+- **Export image (green background)**: the drawer on pure green (0, 255, 0), to key out with a chroma key.
+
+The image is saved to your Pictures folder and the file manager opens on it. Floating widgets (Copy / Paste buttons, notifications, hint pill) are hidden during the capture.
+
+## Customization
+
+Appearance settings are constants at the top of `drawer.gd`:
+
+| Constant | Purpose | Default |
 |---|---|---|
-| `HEIGHT_RATIO` | Hauteur par défaut (part de la fenêtre de l'éditeur) | `0.19` |
-| `MIN_HEIGHT` | Hauteur minimale (px) | `140` |
-| `SIDE_GAP` | Espace de chaque côté (px) | `40` |
-| `BOTTOM_GAP` | Espace sous le tiroir (px) | `10` |
-| `MAX_WIDTH` | Largeur maximale (px) | `2200` |
-| `ANIM_TIME` | Durée de l'animation (s) | `0.2` |
-| `SHOW_HINT` | Pastille « Asset Drawer Ctrl+Espace » en bas de l'éditeur | `true` |
-| `MAX_ITEMS` | Éléments affichés au maximum | `3000` |
-| `SEARCH_DELAY` | Anti-rebond de la recherche (s) | `0.18` |
-| `STICKY_MAX` | Nombre maximum de parents épinglés dans l'arbre | `3` |
+| `HEIGHT_RATIO` | Default height (share of the editor window) | `0.19` |
+| `MIN_HEIGHT` | Minimum height (px) | `140` |
+| `SIDE_GAP` | Space on each side (px) | `40` |
+| `BOTTOM_GAP` | Space below the drawer (px) | `10` |
+| `MAX_WIDTH` | Maximum width (px) | `2200` |
+| `ANIM_TIME` | Animation duration (s) | `0.2` |
+| `SHOW_HINT` | "Asset Drawer Ctrl+Space" pill at the bottom of the editor | `true` |
+| `MAX_ITEMS` | Maximum displayed items | `3000` |
+| `SEARCH_DELAY` | Search debounce (s) | `0.18` |
+| `STICKY_MAX` | Maximum pinned parent folders in the tree | `3` |
 
-Les couleurs (`COLOR_*`, `TEXT_*`) et la palette de dossiers (`FOLDER_COLORS`) sont dans le même fichier.
+Colors (`COLOR_*`, `TEXT_*`) and the folder palette (`FOLDER_COLORS`) are in the same file.
 
-## Fichiers de configuration
+## Configuration files
 
-- L'état du tiroir (dossier courant, hauteur, vue, zoom, épinglage, favoris, récents, sets) est enregistré dans `res://.godot/asset_drawer.cfg`. Le dossier `.godot/` est ignoré par Git par défaut.
-- Les couleurs de dossiers sont stockées par Godot dans `project.godot`, sous `file_customization/folder_colors`.
+- The drawer state (current folder, height, view, zoom, pinning, favorites, recents, sets) is saved in `res://.godot/asset_drawer.cfg`. The `.godot/` folder is ignored by Git by default.
+- Folder colors are stored by Godot in `project.godot`, under `file_customization/folder_colors`.
 
-## Dépannage
+## Troubleshooting
 
-**Les miniatures n'apparaissent pas** : attendez la fin de l'import du projet, puis faites un clic droit dans le vide → **Actualiser**.
+**Thumbnails don't show up**: wait for the project import to finish, then right-click on empty space → **Refresh**.
 
-**Ctrl+Espace ne fait rien** : vérifiez que le plugin est activé et que ce raccourci n'est pas déjà pris par votre système (certains OS l'utilisent pour changer la langue du clavier). Le bouton de la barre d'outils et le menu **Projet → Outils** fonctionnent dans tous les cas.
+**Ctrl+Space does nothing**: check that the plugin is enabled and that the shortcut isn't already taken by your system (some operating systems use it to switch keyboard language). The toolbar button and the **Project → Tools** menu work in any case.
 
-**Une couleur de dossier ne s'affiche pas** : les couleurs viennent du dock Fichiers. Réglez-la là, ou via le clic droit du tiroir, et elle sera visible partout.
+**A folder color doesn't show**: colors come from the FileSystem dock. Set it there, or through the drawer's right-click menu, and it will be visible everywhere.
 
-**Une erreur au démarrage** : désactivez puis réactivez le plugin, et vérifiez que les trois fichiers sont bien présents dans `res://addons/asset_drawer/`.
+**An error at startup**: disable then re-enable the plugin, and check that the three files are present in `res://addons/asset_drawer/`.
 
-## Contribuer
+## Contributing
 
-Les issues et pull requests sont les bienvenues. Pour signaler un bug, indiquez votre version de Godot, votre OS et, si possible, les étapes pour le reproduire.
+Issues and pull requests are welcome. When reporting a bug, include your Godot version, your OS and, if possible, the steps to reproduce it.
 
-## Licence
+## License
 
-À définir : ajoutez un fichier `LICENSE` (MIT par exemple) avant de publier le dépôt.
+To be defined: add a `LICENSE` file (MIT for example) before publishing the repository.

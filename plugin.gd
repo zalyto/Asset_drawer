@@ -2,6 +2,7 @@
 extends EditorPlugin
 
 const Drawer := preload("res://addons/asset_drawer/drawer.gd")
+const L := preload("res://addons/asset_drawer/lang.gd")
 
 var drawer: Control
 var _toolbar_btn: Button
@@ -13,7 +14,7 @@ func _enter_tree() -> void:
 
 	_toolbar_btn = Button.new()
 	_toolbar_btn.flat = true
-	_toolbar_btn.tooltip_text = "Asset Drawer (Ctrl+Espace)"
+	_toolbar_btn.tooltip_text = L.t("Asset Drawer (Ctrl+Espace)")
 	_toolbar_btn.focus_mode = Control.FOCUS_NONE
 	var base := EditorInterface.get_base_control()
 	var icon_name := "FolderBrowse" if base.has_theme_icon("FolderBrowse", "EditorIcons") else "Folder"
