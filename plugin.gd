@@ -9,6 +9,12 @@ const L := preload("res://addons/asset_drawer/lang.gd")
 # false : dans l'éditeur de script, Ctrl+Espace reste l'autocomplétion.
 const OPEN_IN_CODE_EDITOR := true
 
+# true : le raccourci d'ouverture est ignoré tant que la caméra est en free look
+#        (clic droit maintenu dans la vue 3D, ou free look basculé avec Shift+F).
+#        Ça évite d'ouvrir le tiroir quand Ctrl (descendre) + Espace (monter)
+#        sont pressés ensemble pour se déplacer.
+const BLOCK_IN_FREELOOK := true
+
 var drawer: Control
 var _toolbar_btn: Button
 var _theme_check_queued := false
@@ -89,6 +95,13 @@ func _on_menu_toggle() -> void:
 		drawer.toggle()
 
 
+func _is_freelook_active() -> bool:
+	# Pendant le free look, Godot capture la souris (clic droit maintenu OU free look
+	# basculé avec Shift+F). Le test du clic droit sert de filet de sécurité.
+	return Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+		or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+
+
 func _input(event: InputEvent) -> void:
 	if not is_instance_valid(drawer):
 		return
@@ -96,6 +109,9 @@ func _input(event: InputEvent) -> void:
 		return
 	var key := event as InputEventKey
 	if key.keycode == KEY_SPACE and key.ctrl_pressed and not key.alt_pressed and not key.shift_pressed and not key.meta_pressed:
+		# Free look actif : on laisse passer la touche à l'éditeur (déplacement de la caméra).
+		if BLOCK_IN_FREELOOK and _is_freelook_active():
+			return
 		# Ctrl+Espace sert aussi à l'autocomplétion : voir OPEN_IN_CODE_EDITOR en haut du fichier.
 		if not OPEN_IN_CODE_EDITOR:
 			var focus := EditorInterface.get_base_control().get_viewport().gui_get_focus_owner()
