@@ -7,6 +7,11 @@ extends RefCounted
 ## changer la langue de l'éditeur demande de toute façon de le redémarrer.
 
 const EN := {
+	"Déplacer ici": "Move here",
+	"Import avancé...": "Advanced import...",
+	"Import avancé indisponible pour ce fichier": "Advanced import unavailable for this file",
+	"Paramètres d'import": "Import settings",
+	"Nouvelle scène héritée": "New inherited scene",
 	"Échec du déplacement": "Move failed",
 	"%d élément(s) déplacé(s)": "%d item(s) moved",
 	"Élément déplacé": "Item moved",
@@ -46,6 +51,7 @@ const EN := {
 	"Modèles": "Models",
 	"Taille": "Size",
 	"Modifié": "Modified",
+	"Chemin": "Path",
 	"Ouvrir": "Open",
 	"Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou Alt+V au clavier)": "Then hover a resource field in the Inspector (e.g. the Mesh of a MeshInstance3D): a “Paste” button appears (or press Alt+V)",
 	"Coller la ressource": "Paste resource",
