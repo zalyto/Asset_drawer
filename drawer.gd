@@ -140,6 +140,7 @@ var _status: Label
 var _details_panel: PanelContainer
 var _details_width := 190.0
 var _preview: TextureRect
+var _preview_shadows: Array[TextureRect] = []
 var _details_name: Label
 var _details_path: Label
 var _lbl_type: Label
@@ -945,17 +946,35 @@ func _build_details_panel() -> PanelContainer:
 	head.add_theme_constant_override("separation", 6)
 	dv.add_child(head)
 
-	var thumb := PanelContainer.new()
-	thumb.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	thumb.add_theme_stylebox_override("panel", _make_stylebox(COLOR_PATH_BG, COLOR_BORDER.darkened(0.25), 8, 1))
-	head.add_child(thumb)
-	var thumb_pad := _pad(3)
-	thumb.add_child(thumb_pad)
+	# Vignette sans cadre : une petite ombre portée est dessinée derrière l'image elle-même
+	# (silhouettes noires légèrement agrandies et de plus en plus transparentes = ombre douce).
+	var thumb_pad := _pad(4)
+	thumb_pad.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	head.add_child(thumb_pad)
+	var thumb_stack := Control.new()
+	thumb_stack.custom_minimum_size = Vector2(44, 44)
+	thumb_pad.add_child(thumb_stack)
+	for layer in [[3.0, 0.07], [2.0, 0.09], [1.0, 0.12]]:
+		var e: float = layer[0]
+		var sh := TextureRect.new()
+		sh.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		sh.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		sh.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		sh.self_modulate = Color(0, 0, 0, layer[1])
+		sh.anchor_right = 1.0
+		sh.anchor_bottom = 1.0
+		sh.offset_left = -e
+		sh.offset_right = e
+		sh.offset_top = -e + 2.0
+		sh.offset_bottom = e + 2.0
+		thumb_stack.add_child(sh)
+		_preview_shadows.append(sh)
 	_preview = TextureRect.new()
-	_preview.custom_minimum_size = Vector2(44, 44)
 	_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	thumb_pad.add_child(_preview)
+	_preview.anchor_right = 1.0
+	_preview.anchor_bottom = 1.0
+	thumb_stack.add_child(_preview)
 
 	var head_txt := VBoxContainer.new()
 	head_txt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2058,7 +2077,7 @@ func _on_selection_changed(select_in_dock: bool = true) -> void:
 		_lbl_size.text = "-"
 		_lbl_modified.text = "-"
 		_lbl_uid.text = "-"
-		_preview.texture = null
+		_set_preview_tex(null)
 		_preview.self_modulate = Color.WHITE
 		_details_path.visible = false
 		_sync_details_meta()
@@ -2132,7 +2151,7 @@ func _update_details(path: String) -> void:
 		_lbl_size.text = L.t("%d élément%s") % [n, "s" if n > 1 else ""]
 		_lbl_modified.text = "-"
 		_lbl_uid.text = "-"
-		_preview.texture = _get_hd_folder_icon(96)
+		_set_preview_tex(_get_hd_folder_icon(96))
 		_preview.self_modulate = _folder_color(_colors(), path)
 	else:
 		var t := EditorInterface.get_resource_filesystem().get_file_type(path)
@@ -2161,9 +2180,9 @@ func _update_details(path: String) -> void:
 					_lbl_uid.text = ResourceUID.id_to_text(uid)
 			var cached = _preview_cache.get(path, null)
 			if cached != null:
-				_preview.texture = cached
+				_set_preview_tex(cached)
 			else:
-				_preview.texture = _get_hd_file_icon(EditorInterface.get_base_control(), t, 96, false)
+				_set_preview_tex(_get_hd_file_icon(EditorInterface.get_base_control(), t, 96, false))
 				if not _preview_pending.has(path):
 					_preview_pending[path] = true
 					EditorInterface.get_resource_previewer().queue_resource_preview(path, self, "_on_preview", path)
@@ -2706,6 +2725,12 @@ func _collapse_rec(it: TreeItem) -> void:
 		it.collapsed = true
 
 
+func _set_preview_tex(tex: Texture2D) -> void:
+	_preview.texture = tex
+	for sh in _preview_shadows:
+		sh.texture = tex
+
+
 func _on_preview(path: String, preview: Texture2D, _thumb: Texture2D, _user) -> void:
 	_preview_pending.erase(path)
 	if _preview_cache.size() > 4000:
@@ -2718,7 +2743,7 @@ func _on_preview(path: String, preview: Texture2D, _thumb: Texture2D, _user) -> 
 		if i < _list.item_count and str(_list.get_item_metadata(i)) == path:
 			_list.set_item_icon(i, preview)
 	if _context_path == path and _list.get_selected_items().size() <= 1:
-		_preview.texture = preview
+		_set_preview_tex(preview)
 
 
 # ---------- Ouverture / fermeture animées ----------
