@@ -18,6 +18,7 @@ const PREVIEW_DELAY := 0.08     # anti-rebond du chargement des miniatures
 const STICKY_MAX := 3           # nombre max de dossiers parents collés en haut de l'arbre
 # _sticky_row_h() = hauteur réservée par ligne épinglée (toujours = à une ligne entière).
 const ICON_BUCKETS := [24, 64, 96, 160]
+const HIDDEN_ALPHA := 0.45      # opacité des éléments masqués quand on les affiche
 const CFG_PATH := "res://.godot/asset_drawer.cfg"
 const L := preload("res://addons/asset_drawer/lang.gd")   # traductions FR / EN
 
@@ -112,6 +113,13 @@ var _copy_target_path := ""
 var _copy_tween: Tween
 var _pending_select := ""
 var _selected_filter := 0
+var _hidden: PackedStringArray = PackedStringArray()   # éléments masqués (dossier = chemin terminé par "/")
+var _show_hidden := false
+var _search_all := true         # recherche dans tout le projet (sinon : dossier courant)
+var _last_script_ext := "gd"
+var _index: Array = []          # index à plat des noms de fichiers/dossiers (recherche globale)
+var _index_dirty := true
+var _btn_scope: Button
 var _active_left_tab := 0
 var _syncing_tree := false
 var _zoom_grid := 80.0             # zoom mémorisé du mode grille (taille des miniatures)
@@ -187,6 +195,9 @@ var _outside_close_msec := -1000
 var _card_images := {}
 var _preview_cache := {}       # chemin -> miniature Godot (null = échec)
 var _preview_pending := {}     # chemins déjà envoyés au previewer
+var _svg_queue: Array = []     # [chemin, taille cible] : SVG à rastériser nous-mêmes (nets à toute taille)
+var _svg_px := {}              # chemin -> taille (px) de la dernière rastérisation réussie
+var _svg_fail := {}            # SVG que Godot n'a pas pu rastériser : on retombe sur sa miniature
 var _path_index := {}          # chemin -> index dans _list
 var _item_colors := PackedColorArray()   # couleur du liseré de chaque item de _list (transparent = aucun)
 var _bar_style: StyleBoxFlat
@@ -274,6 +285,7 @@ func _on_fs_changed() -> void:
 	# Rien à reconstruire tant que le tiroir est fermé : on marque juste "sale".
 	_dirty = true
 	_tree_dirty = true
+	_index_dirty = true
 	if is_open:
 		_refresh()
 
@@ -282,6 +294,8 @@ func _on_reimported(paths: PackedStringArray) -> void:
 	for p in paths:
 		_preview_cache.erase(p)
 		_preview_pending.erase(p)
+		_svg_px.erase(p)
+		_svg_fail.erase(p)
 
 
 func _apply_saved_state() -> void:
@@ -815,6 +829,15 @@ func _build_toolbar() -> Control:
 	_search.add_theme_stylebox_override("read_only", search_box)
 	_search.text_changed.connect(func(_t: String) -> void: _search_timer.start())
 	row.add_child(_search)
+
+	# Portée de la recherche : tout le projet / dossier courant
+	_btn_scope = _icon_btn("Filesystem,Folder", L.t("Projet"))
+	_btn_scope.toggle_mode = true
+	_btn_scope.button_pressed = _search_all
+	_btn_scope.toggled.connect(_on_scope_toggled)
+	_style_ghost_button(_btn_scope, 5, 2, Color(accent_bar.r, accent_bar.g, accent_bar.b, 0.45))
+	row.add_child(_bar_panel(_btn_scope))
+	_update_search_ui()
 
 	# 4) Mode d'affichage (grille / liste)
 	var view_box := HBoxContainer.new()
@@ -1678,7 +1701,7 @@ func _refresh() -> void:
 	_dir_paths.clear()
 	# Si le dossier courant a disparu, on remonte
 	var fs := EditorInterface.get_resource_filesystem()
-	while _active_set.is_empty() and current_dir != "res://" and fs.get_filesystem_path(current_dir) == null:
+	while _active_set.is_empty() and current_dir != "res://" and (fs.get_filesystem_path(current_dir) == null or (not _show_hidden and _is_hidden(current_dir))):
 		current_dir = current_dir.trim_suffix("/").get_base_dir()
 		if current_dir == "res:":
 			current_dir = "res://"
@@ -1688,10 +1711,13 @@ func _refresh() -> void:
 
 	# entrée = [chemin, type, est_dossier, nom]
 	var query := _search.text.strip_edges().to_lower()
+	var tokens := query.split(" ", false)
 	var entries: Array = []
 	if not _active_set.is_empty():
 		for p in (_sets.get(_active_set, []) as Array):
 			var ps := str(p)
+			if not tokens.is_empty() and not _name_matches(ps.trim_suffix("/").get_file().to_lower(), tokens):
+				continue
 			if DirAccess.dir_exists_absolute(ps):
 				entries.append([ps, "Folder", true, ps.trim_suffix("/").get_file()])
 			elif FileAccess.file_exists(ps) and _pass_filter(ps, _selected_filter):
@@ -1701,17 +1727,22 @@ func _refresh() -> void:
 		if dir != null:
 			for i in dir.get_subdir_count():
 				var sub := dir.get_subdir(i)
+				if not _show_hidden and _is_hidden(sub.get_path()):
+					continue
 				entries.append([sub.get_path(), "Folder", true, sub.get_name()])
 			for i in dir.get_file_count():
 				var fp := dir.get_file_path(i)
-				if _pass_filter(fp, _selected_filter):
+				if _pass_filter(fp, _selected_filter) and (_show_hidden or not _is_hidden(fp)):
 					entries.append([fp, dir.get_file_type(i), false, dir.get_file(i)])
 	else:
-		var start := fs.get_filesystem_path(current_dir)
-		if start != null:
-			_collect(start, query, entries)
+		_search_entries(tokens, entries)
 
 	entries.sort_custom(func(a: Array, b: Array) -> bool:
+		# entrée = [chemin, type, est_dossier, nom, rang]  (rang : 0 nom exact, 1 commence par, 2 contient)
+		var ra: int = a[4] if a.size() > 4 else 0
+		var rb: int = b[4] if b.size() > 4 else 0
+		if ra != rb:
+			return ra < rb
 		if a[2] != b[2]:
 			return a[2]
 		return str(a[3]).naturalnocasecmp_to(str(b[3])) < 0
@@ -1722,27 +1753,43 @@ func _refresh() -> void:
 
 	var custom_colors := _colors()
 	var folder_tex := _get_hd_folder_icon(_icon_bucket)
+	var show_parent := not query.is_empty() and _active_set.is_empty()
+	var check_hidden := _show_hidden and not _hidden.is_empty()
 	for e in entries:
 		var path: String = e[0]
 		var type: String = e[1]
 		var is_dir: bool = e[2]
 		var label: String = e[3]
+		var is_hid := check_hidden and _is_hidden(path)
+		if show_parent:
+			# Résultats venant de plusieurs dossiers : on indique d'où ils viennent
+			var parent := path.trim_suffix("/").get_base_dir().trim_prefix("res://")
+			if parent.is_empty():
+				parent = "res://"
+			label += ("  ·  " + parent) if _view_list else ("\n" + parent)
 		var idx: int
 		if is_dir:
 			idx = _list.add_item(label, folder_tex)
-			_list.set_item_icon_modulate(idx, _folder_color(custom_colors, path))
+			var fc := _folder_color(custom_colors, path)
+			if is_hid:
+				fc.a *= HIDDEN_ALPHA
+			_list.set_item_icon_modulate(idx, fc)
 			_dir_paths[path] = true
 		else:
 			var tex: Texture2D = _preview_cache.get(path, null)
 			if tex == null:
 				tex = _raw_file_icon(base, type) if (_view_list and _icon_bucket <= 24) else _get_hd_file_icon(base, type, _icon_bucket)
 			idx = _list.add_item(label, tex)
+			if is_hid:
+				_list.set_item_icon_modulate(idx, Color(1, 1, 1, HIDDEN_ALPHA))
 		_list.set_item_metadata(idx, path)
-		_list.set_item_tooltip(idx, path)
+		_list.set_item_tooltip(idx, path + (("\n" + L.t("Masqué dans le tiroir")) if is_hid else ""))
 		_path_index[path] = idx
 		_item_colors.append(Color(0, 0, 0, 0) if is_dir else _type_color(path, type))
 		if _is_fav(path):
 			_list.set_item_custom_fg_color(idx, COLOR_FAV)
+		if is_hid:
+			_list.set_item_custom_fg_color(idx, Color(1, 1, 1, HIDDEN_ALPHA))
 	var shown := _list.item_count
 
 	# Restaure la sélection (ou sélectionne le nouvel élément créé)
@@ -1803,6 +1850,44 @@ func _type_color(path: String, type: String) -> Color:
 	return TYPE_COLORS[kind]
 
 
+# ItemList.get_item_rect() ne tient pas compte du défilement dans toutes les versions de Godot
+# (rectangle en coordonnées du contenu au lieu de coordonnées écran) : les liserés de type, les
+# badges et le bouton « Copier » restaient alors fixes pendant qu'on faisait défiler la liste.
+# On le détecte une fois par test de survol (qui, lui, est toujours correct) puis on corrige.
+var _rect_includes_scroll := -1   # -1 inconnu, 0 : rect sans défilement, 1 : rect déjà à l'écran
+
+
+func _item_rect(i: int, expand: bool = true) -> Rect2:
+	var r := _list.get_item_rect(i, expand)
+	var sv := _list.get_v_scroll_bar().value
+	if sv <= 0.0:
+		return r
+	if _rect_includes_scroll < 0:
+		_detect_rect_scroll(sv)
+	if _rect_includes_scroll == 0:
+		r.position.y -= sv
+	return r
+
+
+func _detect_rect_scroll(sv: float) -> void:
+	var xs: Array[float] = [24.0, maxf(float(_list.fixed_column_width) * 0.5, 24.0), 80.0]
+	var y := 6.0
+	while y < _list.size.y:
+		for x in xs:
+			var p := Vector2(x, y)
+			var idx := _list.get_item_at_position(p, true)
+			if idx < 0:
+				continue
+			var r := _list.get_item_rect(idx, true)
+			var as_screen := r.has_point(p)
+			r.position.y -= sv
+			var as_content := r.has_point(p)
+			if as_screen != as_content:   # résultat sans ambiguïté
+				_rect_includes_scroll = 1 if as_screen else 0
+				return
+		y += 10.0
+
+
 ## Dessine, par-dessus la liste, l'indicateur coloré de chaque item visible :
 ## grille = barre incrustée en bas de la vignette ; liste = barre verticale à gauche.
 func _draw_type_bars() -> void:
@@ -1827,7 +1912,7 @@ func _draw_type_bars() -> void:
 		var c := _item_colors[i]
 		if c.a <= 0.0:
 			continue
-		var r := _list.get_item_rect(i, true)
+		var r := _item_rect(i, true)
 		if r.end.y < 0.0:
 			continue
 		if r.position.y > view_h:
@@ -1853,7 +1938,7 @@ func _draw_list_overlay() -> void:
 
 	if not _view_list:
 		for i in _list.get_selected_items():
-			var r := _list.get_item_rect(i, true)
+			var r := _item_rect(i, true)
 			if r.end.y < 0.0:
 				continue
 			if r.position.y > view_h:
@@ -1866,7 +1951,7 @@ func _draw_list_overlay() -> void:
 		_list.draw_style_box(_make_stylebox(Color(acc.r, acc.g, acc.b, 0.06), Color(acc.r, acc.g, acc.b, 0.75), 8, 2), Rect2(Vector2.ZERO, _list.size))
 
 	if _drop_list_idx >= 0 and _drop_list_idx < _list.item_count:
-		var r2 := _list.get_item_rect(_drop_list_idx, true)
+		var r2 := _item_rect(_drop_list_idx, true)
 		var glow := _make_stylebox(Color(acc.r, acc.g, acc.b, 0.26), acc, 9, 2)
 		glow.shadow_color = Color(acc.r, acc.g, acc.b, 0.5)
 		glow.shadow_size = 8
@@ -2016,26 +2101,151 @@ func _request_visible_previews() -> void:
 	var previewer := EditorInterface.get_resource_previewer()
 	for i in range(lo, hi + 1):
 		var path := str(_list.get_item_metadata(i))
-		if _dir_paths.has(path) or _preview_cache.has(path) or _preview_pending.has(path):
+		if _dir_paths.has(path) or _preview_pending.has(path):
+			continue
+		if path.get_extension().to_lower() == "svg" and not _svg_fail.has(path):
+			# La miniature de Godot est petite (≈ 64 px) puis agrandie : floue. On rastérise le
+			# SVG à la taille d'affichage, par petits paquets pour ne pas saccader l'interface.
+			var target := _svg_target()
+			if _preview_cache.has(path) and int(_svg_px.get(path, 0)) >= target:
+				continue
+			_preview_pending[path] = true
+			_svg_queue.append([path, target])
+			continue
+		if _preview_cache.has(path):
 			continue
 		_preview_pending[path] = true
 		previewer.queue_resource_preview(path, self, "_on_preview", path)
 
 
-func _collect(dir: EditorFileSystemDirectory, query: String, out: Array) -> void:
-	if out.size() > MAX_ITEMS:
-		return
+## Tous les mots de la recherche doivent apparaître dans le nom (déjà en minuscules).
+func _name_matches(name_lc: String, tokens: PackedStringArray) -> bool:
+	for t in tokens:
+		if not name_lc.contains(t):
+			return false
+	return true
+
+
+## Index à plat (chemin, type, dossier?, nom, nom en minuscules) de tout le projet.
+## Reconstruit seulement quand le système de fichiers change : une recherche ne parcourt
+## plus l'arborescence de l'éditeur, juste ce tableau.
+func _build_index() -> void:
+	_index.clear()
+	var fs := EditorInterface.get_resource_filesystem().get_filesystem()
+	if fs != null:
+		_index_dir(fs)
+	_index_dirty = false
+
+
+func _index_dir(dir: EditorFileSystemDirectory) -> void:
 	for i in dir.get_subdir_count():
 		var sub := dir.get_subdir(i)
-		if sub.get_name().to_lower().contains(query):
-			out.append([sub.get_path(), "Folder", true, sub.get_name()])
-		_collect(sub, query, out)
+		var sname := sub.get_name()
+		_index.append([sub.get_path(), "Folder", true, sname, sname.to_lower()])
+		_index_dir(sub)
 	for i in dir.get_file_count():
 		var fname := dir.get_file(i)
-		if fname.to_lower().contains(query):
-			var fp := dir.get_file_path(i)
-			if _pass_filter(fp, _selected_filter):
-				out.append([fp, dir.get_file_type(i), false, fname])
+		_index.append([dir.get_file_path(i), dir.get_file_type(i), false, fname, fname.to_lower()])
+
+
+## Recherche dans tout le projet (ou sous le dossier courant). Résultats classés :
+## nom exact, puis nom qui commence par le 1er mot, puis nom qui le contient.
+func _search_entries(tokens: PackedStringArray, out: Array) -> void:
+	if tokens.is_empty():
+		return
+	if _index_dirty:
+		_build_index()
+	var prefix := ""
+	if not _search_all:
+		prefix = current_dir if current_dir.ends_with("/") else current_dir + "/"
+	var check_hidden := not _show_hidden and not _hidden.is_empty()
+	var cap := MAX_ITEMS * 4
+	var first: String = tokens[0]
+	for e in _index:
+		var p: String = e[0]
+		if prefix != "" and (p == prefix or not p.begins_with(prefix)):
+			continue
+		var nm: String = e[4]
+		if not _name_matches(nm, tokens):
+			continue
+		if not e[2] and not _pass_filter(p, _selected_filter):
+			continue
+		if check_hidden and _is_hidden(p):
+			continue
+		var rank := 2
+		if nm.get_basename() == first or nm == first:
+			rank = 0
+		elif nm.begins_with(first):
+			rank = 1
+		out.append([p, e[1], e[2], e[3], rank])
+		if out.size() > cap:
+			break
+
+
+func _on_scope_toggled(on: bool) -> void:
+	_search_all = on
+	_update_search_ui()
+	_save_cfg()
+	if not _search.text.strip_edges().is_empty():
+		_refresh()
+
+
+func _update_search_ui() -> void:
+	if _search != null:
+		_search.placeholder_text = L.t("Rechercher dans tout le projet... (Ctrl+F)") if _search_all else L.t("Rechercher dans ce dossier... (Ctrl+F)")
+	if _btn_scope != null:
+		_btn_scope.tooltip_text = L.t("Recherche : tout le projet (cliquer pour limiter au dossier courant)") if _search_all else L.t("Recherche : dossier courant (cliquer pour chercher dans tout le projet)")
+
+
+# ---------- Éléments masqués ----------
+
+## Clé stockée : un dossier se termine par "/", un fichier garde son chemin exact.
+func _hidden_key(path: String) -> String:
+	if DirAccess.dir_exists_absolute(path):
+		return path.trim_suffix("/") + "/"
+	return path
+
+
+func _is_hidden(path: String) -> bool:
+	if _hidden.is_empty():
+		return false
+	var pd := path if path.ends_with("/") else path + "/"
+	for h in _hidden:
+		if h.ends_with("/"):
+			if pd.begins_with(h):
+				return true
+		elif path == h:
+			return true
+	return false
+
+
+func _hide_paths(paths: PackedStringArray, hide: bool) -> void:
+	for p in paths:
+		if p == "res://":
+			continue
+		var key := _hidden_key(p)
+		if hide:
+			if not _hidden.has(key):
+				_hidden.append(key)
+		else:
+			var i := _hidden.find(key)
+			if i >= 0:
+				_hidden.remove_at(i)
+	_tree_dirty = true
+	_save_cfg()
+	_list.deselect_all()
+	_refresh()
+	if hide and not _show_hidden:
+		_flash(L.t("Masqué dans le tiroir · clic droit → « Afficher les éléments masqués »"))
+	else:
+		_flash(L.t("Masqué dans le tiroir") if hide else L.t("Réaffiché"))
+
+
+func _set_show_hidden(on: bool) -> void:
+	_show_hidden = on
+	_tree_dirty = true
+	_save_cfg()
+	_refresh()
 
 
 func _pass_filter(path: String, filter_idx: int) -> bool:
@@ -2275,11 +2485,18 @@ func _sync_tree_selection() -> void:
 func _fill_tree(parent: TreeItem, dir: EditorFileSystemDirectory, colors: Dictionary, icon: Texture2D) -> void:
 	for i in dir.get_subdir_count():
 		var sub := dir.get_subdir(i)
+		var is_hid := _is_hidden(sub.get_path())
+		if is_hid and not _show_hidden:
+			continue
 		var item := _tree.create_item(parent)
 		item.set_text(0, sub.get_name())
 		item.set_metadata(0, sub.get_path())
 		item.set_icon(0, icon)
-		item.set_icon_modulate(0, _folder_color(colors, sub.get_path()))
+		var tint := _folder_color(colors, sub.get_path())
+		if is_hid:
+			tint.a *= HIDDEN_ALPHA
+			item.set_custom_color(0, Color(1, 1, 1, HIDDEN_ALPHA))
+		item.set_icon_modulate(0, tint)
 		_tree_items[sub.get_path().trim_suffix("/")] = item
 		_fill_tree(item, sub, colors, icon)
 		# Replié par défaut (gros projets) ; le dossier courant est déplié à la sélection
@@ -2347,6 +2564,7 @@ func _process(_delta: float) -> void:
 		_update_sticky()
 	_update_paste_pop_hover()
 	_update_copy_pop_hover()
+	_pump_svg_queue()
 	# Garde-fou : la pastille "Ctrl+Espace" doit toujours être invisible pendant que le tiroir
 	# est ouvert. Réaffirmé à chaque frame plutôt que de compter uniquement sur open()/close(),
 	# au cas où un chemin annexe (rechargement du thème, appel différé...) l'aurait manqué.
@@ -2731,8 +2949,57 @@ func _set_preview_tex(tex: Texture2D) -> void:
 		sh.texture = tex
 
 
+## Taille (px) à laquelle rastériser les SVG, selon le zoom et l'échelle de l'éditeur
+## (≈ 2× la taille affichée : l'ItemList réduit ensuite sans crénelage).
+func _svg_target() -> int:
+	var base_px := 128
+	match _icon_bucket:
+		24: base_px = 64
+		64: base_px = 128
+		96: base_px = 192
+		160: base_px = 320
+	var ui_scale := clampf(EditorInterface.get_editor_scale(), 1.0, 2.0)
+	return mini(int(base_px * ui_scale), 512)
+
+
+func _pump_svg_queue() -> void:
+	if _svg_queue.is_empty():
+		return
+	var t0 := Time.get_ticks_usec()
+	while not _svg_queue.is_empty() and Time.get_ticks_usec() - t0 < 6000:
+		var job: Array = _svg_queue.pop_front()
+		var path: String = job[0]
+		var target: int = job[1]
+		var tex := _render_svg(path, target)
+		if tex != null:
+			_svg_px[path] = target
+			_on_preview(path, tex, null, "svg")
+		else:
+			_svg_fail[path] = true
+			_preview_pending.erase(path)
+			_schedule_previews()   # retombe sur la miniature de Godot
+
+
+func _render_svg(path: String, target: int) -> Texture2D:
+	var text := FileAccess.get_file_as_string(path)
+	if text.is_empty():
+		return null
+	var img := Image.new()
+	if img.load_svg_from_string(text, 1.0) != OK or img.get_width() <= 0 or img.get_height() <= 0:
+		return null
+	var longest := maxi(img.get_width(), img.get_height())
+	if absf(float(longest) - float(target)) > 2.0:
+		# Rendu direct à la bonne échelle (vectoriel : pas de perte, contrairement à un agrandissement)
+		var img2 := Image.new()
+		if img2.load_svg_from_string(text, float(target) / float(longest)) == OK and img2.get_width() > 0:
+			img = img2
+	return ImageTexture.create_from_image(img)
+
+
 func _on_preview(path: String, preview: Texture2D, _thumb: Texture2D, _user) -> void:
 	_preview_pending.erase(path)
+	if str(_user) != "svg" and _svg_px.has(path) and _preview_cache.get(path, null) != null:
+		return   # on garde notre rastérisation, plus nette
 	if _preview_cache.size() > 4000:
 		_preview_cache.clear()
 	_preview_cache[path] = preview    # null = échec, évite de redemander en boucle
@@ -3319,7 +3586,7 @@ func _marquee_update(pos: Vector2, mask: int) -> void:
 	for i in _mq_base:
 		_list.select(i, false)
 	for i in _list.item_count:
-		var r := _list.get_item_rect(i, true).grow(-4.0)
+		var r := _item_rect(i, true).grow(-4.0)
 		if r.position.y > rect.end.y:
 			break
 		if r.end.y < rect.position.y:
@@ -3584,6 +3851,26 @@ func _ctx_sep() -> void:
 	_ctx_vbox.add_child(HSeparator.new())
 
 
+## Entrée de menu à case à cocher.
+func _ctx_check(title: String, checked: bool, on_toggle: Callable) -> CheckBox:
+	var cb := CheckBox.new()
+	cb.text = title
+	cb.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	cb.focus_mode = Control.FOCUS_NONE
+	cb.button_pressed = checked
+	_style_ghost_button(cb, 8, 3)
+	# Le thème colore le texte d'un bouton coché : on garde la couleur normale
+	var fc: Color = EditorInterface.get_base_control().get_theme_color("font_color", "Button")
+	for n in ["font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
+		cb.add_theme_color_override(n, fc)
+	cb.toggled.connect(func(on: bool) -> void:
+		_ctx_popup.hide()
+		on_toggle.call(on)
+	)
+	_ctx_vbox.add_child(cb)
+	return cb
+
+
 ## Charge la ressource en mémoire et la garde comme "presse-papiers" du tiroir.
 ## Un bouton "Coller" apparaît ensuite au survol de tout champ ressource compatible
 ## de l'Inspecteur (ou Alt+V comme raccourci clavier).
@@ -3778,25 +4065,42 @@ func _update_copy_pop_hover() -> void:
 			_hide_copy_pop()
 		return
 
+	if not _position_copy_pop(idx):
+		# élément (presque) entièrement sorti de la zone visible : pas de bouton
+		if _copy_pop.visible:
+			_hide_copy_pop()
+		return
 	var is_new := path != _copy_target_path or not _copy_pop.visible
 	_copy_target_path = path
-	_position_copy_pop(idx)
 	if is_new:
 		_show_copy_pop()
 
 
-func _position_copy_pop(idx: int) -> void:
-	var item_rect := _list.get_item_rect(idx, false)
+func _position_copy_pop(idx: int) -> bool:
+	# Le bouton vit dans un calque non découpé : on le garde explicitement dans la partie
+	# VISIBLE de la liste (un fichier à moitié sorti en haut ne doit pas le faire déborder sur
+	# la barre de recherche / le chemin). Retourne false s'il n'y a pas de place visible.
+	var item_rect := _item_rect(idx, false)
+	var vbar := _list.get_v_scroll_bar()
+	var view_w := _list.size.x - (vbar.size.x if vbar.visible else 0.0)
+	var view := Rect2(Vector2.ZERO, Vector2(view_w, _list.size.y))
+	var vis := item_rect.intersection(view)
+	var btn_size := _copy_pop.size
+	if vis.size.x < 8.0 or vis.size.y < minf(btn_size.y * 0.6, 10.0):
+		return false
 	var origin: Vector2 = _toast_overlay.global_position
 	var list_origin: Vector2 = _list.global_position
-	var btn_size := _copy_pop.size
 
-	# Coin haut-droit de la vignette/ligne de l'élément, jamais en dehors de son rectangle.
-	var x: float = item_rect.position.x + item_rect.size.x - btn_size.x - 3.0
-	x = maxf(x, item_rect.position.x + 1.0)
-	var y: float = item_rect.position.y + 3.0
-	y = minf(y, item_rect.position.y + maxf(item_rect.size.y - btn_size.y - 1.0, 1.0))
+	# Coin haut-droit de la partie visible de l'élément
+	var x: float = vis.end.x - btn_size.x - 3.0
+	x = maxf(x, vis.position.x + 1.0)
+	var y: float = vis.position.y + 3.0
+	y = minf(y, vis.position.y + maxf(vis.size.y - btn_size.y - 1.0, 1.0))
+	# Garde-fou final : jamais en dehors de la liste
+	x = clampf(x, 0.0, maxf(view_w - btn_size.x, 0.0))
+	y = clampf(y, 0.0, maxf(_list.size.y - btn_size.y, 0.0))
 	_copy_pop.position = list_origin + Vector2(x, y) - origin
+	return true
 
 
 func _show_copy_pop() -> void:
@@ -3913,6 +4217,11 @@ func _show_context() -> void:
 		_ctx_btn(L.t("Afficher dans l'explorateur"), func() -> void:
 			OS.shell_show_in_file_manager(ProjectSettings.globalize_path(target.trim_suffix("/")))
 		, Color.TRANSPARENT, "ExternalLink")
+		if single and _active_set.is_empty() and not _search.text.strip_edges().is_empty():
+			_ctx_btn(L.t("Afficher dans son dossier"), func() -> void:
+				_pending_select = target
+				_navigate(target)
+			, Color.TRANSPARENT, "Folder")
 		_ctx_sep()
 		_ctx_btn(L.t("Copier le chemin"), func() -> void:
 			DisplayServer.clipboard_set("\n".join(sel))
@@ -3972,6 +4281,7 @@ func _show_context() -> void:
 			btn.button_pressed = true
 			btn.pressed.emit()
 		, Color.TRANSPARENT, "Grid" if _view_list else "FileList")
+		_ctx_check(L.t("Afficher les éléments masqués"), _show_hidden, _set_show_hidden)
 		_ctx_sep()
 
 	_ctx_btn(L.t("Nouveau dossier"), _create_folder, Color.TRANSPARENT, "Folder")
@@ -4018,6 +4328,18 @@ func _show_context() -> void:
 				_save_cfg()
 				_refresh()
 			)
+		var to_hide: PackedStringArray = []
+		var to_unhide: PackedStringArray = []
+		for hp in sel:
+			if _hidden.has(_hidden_key(hp)):
+				to_unhide.append(hp)
+			elif hp != "res://" and not _is_hidden(hp):
+				to_hide.append(hp)
+		if not to_hide.is_empty():
+			_ctx_btn(L.t("Masquer dans le tiroir"), func() -> void: _hide_paths(to_hide, true), Color.TRANSPARENT, "GuiVisibilityHidden")
+		if not to_unhide.is_empty():
+			_ctx_btn(L.t("Ne plus masquer"), func() -> void: _hide_paths(to_unhide, false), Color.TRANSPARENT, "GuiVisibilityVisible")
+		_ctx_check(L.t("Afficher les éléments masqués"), _show_hidden, _set_show_hidden)
 		if not is_dir:
 			_ctx_btn(L.t("Réimporter"), func() -> void:
 				var files: PackedStringArray = []
@@ -4104,22 +4426,201 @@ func _create_scene() -> void:
 	)
 
 
+## Vrai seulement si le projet a déjà une solution C# (un fichier .csproj à la racine).
+## Sans ça, Godot n'indexe pas les scripts .cs dans son EditorFileSystem : le fichier
+## existerait bien sur le disque mais resterait invisible partout dans l'éditeur, pas
+## seulement dans le tiroir (c'est pour ça qu'on bloque la création plutôt que de laisser
+## créer un fichier "fantôme" qui ferait croire ensuite qu'il existe déjà).
+func _has_csharp_project() -> bool:
+	var d := DirAccess.open("res://")
+	if d == null:
+		return false
+	d.list_dir_begin()
+	var f := d.get_next()
+	while f != "":
+		if not d.current_is_dir() and f.get_extension().to_lower() == "csproj":
+			return true
+		f = d.get_next()
+	return false
+
+
+## Langages proposés dans le menu déroulant : uniquement ceux que CE build de Godot connaît
+## réellement (ScriptServer ne liste "C#" que sur l'édition .NET, par exemple), exactement
+## comme le fait le dialogue natif "Create Script" de Godot. On ajoute "Shader" (pas un
+## ScriptLanguage à part entière) et "Personnalisé..." (extension libre) à la fin.
+## Langages proposés dans le menu déroulant : uniquement ceux que CE build de Godot connaît
+## réellement. `ScriptServer` (utilisé en interne par le dialogue natif "Create Script") n'est
+## pas exposé à GDScript, donc on détecte autrement : GDScript est toujours là, et C# seulement
+## si ce build a le tag de fonctionnalité "mono" (les éditions .NET de Godot le définissent).
+## Chaque entrée est soit {"sep": "Nom de catégorie"} (un séparateur non sélectionnable dans
+## le menu), soit {"name": ..., "ext": ...} (une option réelle).
+func _script_languages() -> Array:
+	var out: Array = []
+	out.append({"sep": L.t("Scripts")})
+	out.append({"name": "GDScript", "ext": "gd"})
+	if OS.has_feature("mono"):
+		out.append({"name": "C#", "ext": "cs"})
+	out.append({"name": L.t("Shader"), "ext": "gdshader"})
+	# Types de fichiers texte courants, pas liés à un langage de script en particulier
+	# (créer un simple .txt ou .json à côté des assets est un besoin fréquent).
+	out.append({"sep": L.t("Fichiers texte")})
+	out.append({"name": L.t("Texte"), "ext": "txt"})
+	out.append({"name": "JSON", "ext": "json"})
+	out.append({"name": "Markdown", "ext": "md"})
+	out.append({"name": L.t("Configuration"), "ext": "cfg"})
+	out.append({"name": "XML", "ext": "xml"})
+	out.append({"name": "CSV", "ext": "csv"})
+	out.append({"sep": ""})
+	out.append({"name": L.t("Personnalisé..."), "ext": ""})
+	return out
+
+
 func _create_script() -> void:
 	var dir := _target_dir()
-	_prompt_string(L.t("Nouveau script"), _unique_path(dir, L.t("nouveau_script"), ".gd").get_file(), func(n: String) -> void:
-		if not _valid_name(n):
+	var langs := _script_languages()
+
+	var d := ConfirmationDialog.new()
+	d.title = L.t("Nouveau script")
+	d.ok_button_text = L.t("Créer")
+	d.cancel_button_text = L.t("Annuler")
+
+	var vb := VBoxContainer.new()
+	vb.custom_minimum_size.x = 340
+	vb.add_theme_constant_override("separation", 8)
+	d.add_child(vb)
+
+	var lang_row := HBoxContainer.new()
+	lang_row.add_theme_constant_override("separation", 8)
+	vb.add_child(lang_row)
+	var lang_lbl := Label.new()
+	lang_lbl.text = L.t("Langage")
+	lang_lbl.custom_minimum_size.x = 70
+	lang_row.add_child(lang_lbl)
+	var lang_opt := OptionButton.new()
+	lang_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Correspondance entre l'index du menu (les séparateurs de catégorie comptent pour une
+	# case, même si on ne peut pas les sélectionner) et l'index réel dans "langs" : -1 pour
+	# un séparateur, sinon l'index de l'entrée correspondante dans "langs".
+	var entry_of_index: Array = []
+	for i in langs.size():
+		var entry: Dictionary = langs[i]
+		if entry.has("sep"):
+			lang_opt.add_separator(entry.sep)
+			entry_of_index.append(-1)
+		else:
+			lang_opt.add_item(entry.name)
+			entry_of_index.append(i)
+	lang_row.add_child(lang_opt)
+
+	var custom_row := HBoxContainer.new()
+	custom_row.add_theme_constant_override("separation", 8)
+	custom_row.visible = false
+	vb.add_child(custom_row)
+	var custom_lbl := Label.new()
+	custom_lbl.text = L.t("Extension")
+	custom_lbl.custom_minimum_size.x = 70
+	custom_row.add_child(custom_lbl)
+	var custom_edit := LineEdit.new()
+	custom_edit.placeholder_text = "txt"
+	custom_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	custom_row.add_child(custom_edit)
+
+	var name_row := HBoxContainer.new()
+	name_row.add_theme_constant_override("separation", 8)
+	vb.add_child(name_row)
+	var name_lbl := Label.new()
+	name_lbl.text = L.t("Nom")
+	name_lbl.custom_minimum_size.x = 70
+	name_row.add_child(name_lbl)
+	var name_edit := LineEdit.new()
+	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_row.add_child(name_edit)
+	d.register_text_enter(name_edit)
+
+	# Présélectionne le dernier langage utilisé pour ce tiroir, sinon GDScript (premier élément
+	# sélectionnable : on saute l'éventuel séparateur de catégorie en tête de liste).
+	var start_idx := 0
+	for oi in entry_of_index.size():
+		var li: int = entry_of_index[oi]
+		if li >= 0:
+			start_idx = oi
+			if langs[li].ext == _last_script_ext:
+				break
+	lang_opt.select(start_idx)
+
+	# Le nom proposé se met à jour avec l'extension du langage choisi, comme le champ
+	# "Path" du dialogue natif de Godot quand on change de langage.
+	var update_name := func() -> void:
+		var entry: Dictionary = langs[entry_of_index[lang_opt.selected]]
+		var is_custom: bool = entry.ext.is_empty()
+		custom_row.visible = is_custom
+		var ext: String = custom_edit.text.strip_edges().trim_prefix(".") if is_custom else entry.ext
+		var suffix := ("." + ext) if not ext.is_empty() else ""
+		name_edit.text = _unique_path(dir, L.t("nouveau_script"), suffix).get_file().get_basename()
+	lang_opt.item_selected.connect(func(_i: int) -> void: update_name.call())
+	custom_edit.text_changed.connect(func(_t: String) -> void: update_name.call())
+	update_name.call()
+
+	d.confirmed.connect(func() -> void:
+		var entry: Dictionary = langs[entry_of_index[lang_opt.selected]]
+		var is_custom: bool = entry.ext.is_empty()
+		var ext: String = (custom_edit.text.strip_edges().trim_prefix(".").to_lower()) if is_custom else entry.ext
+		var base_name := name_edit.text.strip_edges()
+		if base_name.is_empty() or ext.is_empty() or not _valid_name(base_name + "." + ext):
 			return
-		var p := dir.path_join(n if n.ends_with(".gd") else n + ".gd")
-		if FileAccess.file_exists(p):
-			_flash(L.t("« %s » existe déjà") % n, true)
+		if ext == "cs" and not _has_csharp_project():
+			_flash(L.t("Pas de solution C# dans ce projet : créez un premier script C# depuis le dock Fichiers de Godot (il générera le .csproj), puis réessayez ici"), true)
+			return
+		var fname := base_name + "." + ext
+		var p := dir.path_join(fname)
+		if FileAccess.file_exists(p) or DirAccess.dir_exists_absolute(p):
+			_flash(L.t("« %s » existe déjà") % fname, true)
 			return
 		var f := FileAccess.open(p, FileAccess.WRITE)
-		if f:
-			f.store_string("extends Node\n\n\nfunc _ready() -> void:\n\tpass\n")
-			f.close()
+		if f == null:
+			_flash(L.t("Impossible de créer « %s »") % fname, true)
+			return
+		f.store_string(_script_template(ext, base_name))
+		f.close()
+		_last_script_ext = ext
+		_save_cfg()
 		_pending_select = p
 		_scan()
+		if ext == "cs" and EditorInterface.get_resource_filesystem().has_method("scan_sources"):
+			EditorInterface.get_resource_filesystem().call("scan_sources")
 	)
+	d.visibility_changed.connect(func() -> void:
+		if not d.visible:
+			d.queue_free()
+	)
+	EditorInterface.get_base_control().add_child(d)
+	d.popup_centered(Vector2i(380, 170))
+	name_edit.grab_focus()
+	name_edit.select_all()
+
+
+## Contenu initial selon l'extension : GDScript, C# et shader ont un modèle, le reste est vide.
+func _script_template(ext: String, base_name: String) -> String:
+	match ext:
+		"gd":
+			return "extends Node\n\n\nfunc _ready() -> void:\n\tpass\n"
+		"cs":
+			var cls := ""
+			for ch in base_name.to_pascal_case():
+				if (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_":
+					cls += ch
+			if cls.is_empty() or (cls[0] >= "0" and cls[0] <= "9"):
+				cls = "_" + cls
+			return "using Godot;\n\npublic partial class %s : Node\n{\n\tpublic override void _Ready()\n\t{\n\t}\n}\n" % cls
+		"gdshader":
+			return "shader_type canvas_item;\n\nvoid fragment() {\n}\n"
+		"json":
+			return "{}\n"
+		"xml":
+			return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		"md":
+			return "# %s\n" % base_name
+	return ""
 
 
 func _rename(path: String) -> void:
@@ -4232,6 +4733,7 @@ func _forget_path(src: String) -> void:
 	_favorites = PackedStringArray(fav)
 	_push_favorites()
 	_recents = PackedStringArray(rec)
+	_hidden = PackedStringArray(Array(_hidden).filter(func(p) -> bool: return not _is_under(str(p), src)))
 	for k in _sets.keys():
 		var arr: Array = _sets[k]
 		_sets[k] = arr.filter(func(p) -> bool: return not _is_under(str(p), src))
@@ -4301,6 +4803,9 @@ func _rewrite_paths(src: String, dst: String) -> void:
 	_push_favorites()
 	for i in _recents.size():
 		_recents[i] = _swap_prefix(_recents[i], src, dst)
+	for i in _hidden.size():
+		_hidden[i] = _swap_prefix(_hidden[i], src, dst)
+	_tree_dirty = true
 	for k in _sets.keys():
 		var arr: Array = _sets[k]
 		for i in arr.size():
@@ -4443,6 +4948,10 @@ func _load_cfg() -> void:
 		_zoom_grid = float(c.get_value("state", "zoom", 80.0))
 		_zoom_list = float(c.get_value("state", "zoom_list", 22.0))
 		_details_width = maxf(float(c.get_value("state", "details_width", 190.0)), DETAILS_MIN_WIDTH)
+		_hidden = c.get_value("state", "hidden", PackedStringArray())
+		_show_hidden = bool(c.get_value("state", "show_hidden", false))
+		_search_all = bool(c.get_value("state", "search_all", true))
+		_last_script_ext = str(c.get_value("state", "script_ext", "gd"))
 	_history = PackedStringArray([current_dir])
 
 
@@ -4471,4 +4980,8 @@ func _flush_cfg() -> void:
 	c.set_value("state", "zoom", _zoom_grid)
 	c.set_value("state", "zoom_list", _zoom_list)
 	c.set_value("state", "details_width", _details_width)
+	c.set_value("state", "hidden", _hidden)
+	c.set_value("state", "show_hidden", _show_hidden)
+	c.set_value("state", "search_all", _search_all)
+	c.set_value("state", "script_ext", _last_script_ext)
 	c.save(CFG_PATH)

@@ -7,6 +7,17 @@ extends RefCounted
 ## changer la langue de l'éditeur demande de toute façon de le redémarrer.
 
 const EN := {
+	"Scripts": "Scripts",
+	"Shader": "Shader",
+	"Fichiers texte": "Text files",
+	"Texte": "Text",
+	"Configuration": "Configuration",
+	"Personnalisé...": "Custom...",
+	"Créer": "Create",
+	"Langage": "Language",
+	"Extension": "Extension",
+	"Nom": "Name",
+	"Pas de solution C# dans ce projet : créez un premier script C# depuis le dock Fichiers de Godot (il générera le .csproj), puis réessayez ici": "No C# solution in this project: create a first C# script from Godot's FileSystem dock (it will generate the .csproj), then try again here",
 	"Déplacer ici": "Move here",
 	"Import avancé...": "Advanced import...",
 	"Import avancé indisponible pour ce fichier": "Advanced import unavailable for this file",
@@ -144,6 +155,19 @@ const EN := {
 	"Confirmer": "Confirm",
 	" · %d sélectionné%s": " · %d selected%s",
 	"Asset Drawer (Ctrl+Espace)": "Asset Drawer (Ctrl+Space)",
+	"Projet": "Project",
+	"Rechercher dans tout le projet... (Ctrl+F)": "Search the whole project... (Ctrl+F)",
+	"Rechercher dans ce dossier... (Ctrl+F)": "Search this folder... (Ctrl+F)",
+	"Recherche : tout le projet (cliquer pour limiter au dossier courant)": "Search: whole project (click to limit to the current folder)",
+	"Recherche : dossier courant (cliquer pour chercher dans tout le projet)": "Search: current folder (click to search the whole project)",
+	"Masqué dans le tiroir": "Hidden in the drawer",
+	"Masqué dans le tiroir · clic droit → « Afficher les éléments masqués »": "Hidden in the drawer · right-click → “Show hidden items”",
+	"Réaffiché": "Unhidden",
+	"Afficher les éléments masqués": "Show hidden items",
+	"Masquer dans le tiroir": "Hide in the drawer",
+	"Ne plus masquer": "Unhide",
+	"Afficher dans son dossier": "Show in its folder",
+	"Impossible de créer « %s »": "Can't create “%s”",
 }
 
 static var _fr := -1
