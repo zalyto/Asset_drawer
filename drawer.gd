@@ -1,60 +1,60 @@
 @tool
 extends PanelContainer
 
-const HEIGHT_RATIO := 0.15      # hauteur du tiroir (part de la fenêtre de l'éditeur)
-const MIN_HEIGHT := 60.0       # le contenu impose de toute façon un minimum (barres du haut / bas)
-const CFG_VERSION := 4          # v3 : tiroir plus compact par défaut (hauteur réduite)
-const SIDE_GAP := 40.0          # espace laissé de chaque côté
-const BOTTOM_GAP := 40.0        # espace sous le tiroir (laisse voir la barre Output / Debugger / Audio...)
+const HEIGHT_RATIO := 0.15      # drawer height (share of the editor window)
+const MIN_HEIGHT := 60.0       # the content imposes a minimum anyway (top / bottom bars)
+const CFG_VERSION := 4          # v3: more compact drawer by default (reduced height)
+const SIDE_GAP := 40.0          # gap left on each side
+const BOTTOM_GAP := 40.0        # gap below the drawer (keeps the Output / Debugger / Audio bar visible...)
 const MAX_WIDTH := 2200.0
-const DETAILS_MIN_WIDTH := 140.0       # largeur plancher du panneau de détails (redimensionnable au-delà)
+const DETAILS_MIN_WIDTH := 140.0       # minimum width of the details panel (resizable beyond it)
 const ANIM_TIME := 0.2
-const SHOW_HINT := true         # pastille "Asset Drawer  Ctrl+Espace" en bas de l'éditeur
+const SHOW_HINT := true         # "Asset Drawer  Ctrl+Space" pill at the bottom of the editor
 const HINT_BOTTOM := 44.0
-const MAX_ITEMS := 3000         # plafond d'éléments affichés (perf)
-const SEARCH_DELAY := 0.18      # anti-rebond de la recherche
-const SAVE_DELAY := 0.6         # anti-rebond de la sauvegarde de la config
-const PREVIEW_DELAY := 0.08     # anti-rebond du chargement des miniatures
-const STICKY_MAX := 3           # nombre max de dossiers parents collés en haut de l'arbre
-# _sticky_row_h() = hauteur réservée par ligne épinglée (toujours = à une ligne entière).
+const MAX_ITEMS := 3000         # cap on displayed items (performance)
+const SEARCH_DELAY := 0.18      # search debounce
+const SAVE_DELAY := 0.6         # config save debounce
+const PREVIEW_DELAY := 0.08     # thumbnail loading debounce
+const STICKY_MAX := 3           # max number of parent folders pinned at the top of the tree
+# _sticky_row_h() = height reserved per pinned row (always equal to one full row).
 const ICON_BUCKETS := [24, 64, 96, 160]
-const HIDDEN_ALPHA := 0.45      # opacité des éléments masqués quand on les affiche
+const HIDDEN_ALPHA := 0.45      # opacity of hidden items when they are shown
 const CFG_PATH := "res://.godot/asset_drawer.cfg"
-const L := preload("res://addons/asset_drawer/lang.gd")   # traductions FR / EN
+const L := preload("res://addons/asset_drawer/lang.gd")   # FR / EN translations
 
 # --- Palette --------------------------------------------------------------
-# Les couleurs de fond / bordure / texte ci-dessous sont des VARIABLES : les valeurs écrites ici
-# ne servent que de secours. Elles sont recalculées au démarrage par _update_palette() à partir
-# du thème de l'éditeur (Paramètres de l'éditeur > Interface > Thème > Couleur de base + Contraste).
-# Principe : peu de teintes, une hiérarchie d'élévation claire (du plus sombre "fondation"
-# au plus clair "sous les doigts"), un accent utilisé avec parcimonie (bordure du tiroir,
-# sélection, focus) plutôt qu'étalé partout, et une seule échelle de gris pour le texte.
-var COLOR_BG_MAIN := Color(0.045, 0.05, 0.067, 1.0)      # fondation (le tiroir lui-même)
-var COLOR_HEADER := Color(0.083, 0.097, 0.14, 1.0)       # barre du haut (nav + recherche + filtres)
-var COLOR_LEFT_PANEL := Color(0.083, 0.097, 0.14, 1.0)   # arbre des dossiers
-var COLOR_CENTER_PANEL := Color(0.083, 0.097, 0.14, 1.0) # grille/liste d'assets, légèrement surélevée
-var COLOR_RIGHT_PANEL := Color(0.083, 0.097, 0.14, 1.0)  # panneau de détails
-var COLOR_FOOTER := Color(0.084, 0.091, 0.114)        # barre de statut, la plus sombre (ancrage bas)
-var COLOR_BORDER := Color(0.26, 0.30, 0.37, 0.65)    # liseré fin entre panneaux, pas un trait dur
-var COLOR_PATH_BG := Color(0.062, 0.068, 0.086)      # fond commun des conteneurs de la barre du haut
-const BAR_H := 26.0                                    # hauteur commune des conteneurs de la barre du haut
+# The background / border / text colors below are VARIABLES: the values written here
+# are only a fallback. They are recomputed at startup by _update_palette() from the
+# editor theme (Editor Settings > Interface > Theme > Base Color + Contrast).
+# Principle: few hues, a clear elevation hierarchy (from the darkest "foundation"
+# to the lightest "under the fingers"), an accent used sparingly (drawer border,
+# selection, focus) rather than spread everywhere, and a single gray scale for text.
+var COLOR_BG_MAIN := Color(0.045, 0.05, 0.067, 1.0)      # foundation (the drawer itself)
+var COLOR_HEADER := Color(0.083, 0.097, 0.14, 1.0)       # top bar (nav + search + filters)
+var COLOR_LEFT_PANEL := Color(0.083, 0.097, 0.14, 1.0)   # folder tree
+var COLOR_CENTER_PANEL := Color(0.083, 0.097, 0.14, 1.0) # asset grid/list, slightly raised
+var COLOR_RIGHT_PANEL := Color(0.083, 0.097, 0.14, 1.0)  # details panel
+var COLOR_FOOTER := Color(0.084, 0.091, 0.114)        # status bar, the darkest (bottom anchor)
+var COLOR_BORDER := Color(0.26, 0.30, 0.37, 0.65)    # thin edge between panels, not a hard line
+var COLOR_PATH_BG := Color(0.062, 0.068, 0.086)      # shared background of the top bar containers
+const BAR_H := 26.0                                    # shared height of the top bar containers
 
-# Hiérarchie de texte : une seule échelle de gris (jamais de blanc pur, plus doux à l'œil).
-var TEXT_PRIMARY := Color(0.93, 0.94, 0.97)          # titres, nom du fichier sélectionné
-var TEXT_SECONDARY := Color(0.93, 0.94, 0.97, 0.62)  # chemins, méta-infos, texte de statut
-var TEXT_MUTED := Color(0.93, 0.94, 0.97, 0.38)      # texte discret (placeholders, séparateurs)
-var COLOR_POPUP_BG := Color(0.09, 0.10, 0.13, 0.97)    # fond des notifications
-var COLOR_CARD_BG := Color(0.10, 0.12, 0.15, 0.96)     # fond des petites cartes (aperçu de glisser, cible de dépôt)
-var COLOR_TRACK := Color(0.42, 0.46, 0.54)             # piste du curseur de zoom
-var _font_color := Color(0.93, 0.94, 0.97)             # couleur de texte de l'éditeur (base des surcouches _ov)
-var _palette_sig := ""                                 # signature du thème utilisé pour construire l'UI
+# Text hierarchy: a single gray scale (never pure white, easier on the eyes).
+var TEXT_PRIMARY := Color(0.93, 0.94, 0.97)          # titles, name of the selected file
+var TEXT_SECONDARY := Color(0.93, 0.94, 0.97, 0.62)  # paths, meta info, status text
+var TEXT_MUTED := Color(0.93, 0.94, 0.97, 0.38)      # subtle text (placeholders, separators)
+var COLOR_POPUP_BG := Color(0.09, 0.10, 0.13, 0.97)    # notification background
+var COLOR_CARD_BG := Color(0.10, 0.12, 0.15, 0.96)     # background of small cards (drag preview, drop target)
+var COLOR_TRACK := Color(0.42, 0.46, 0.54)             # track of the zoom slider
+var _font_color := Color(0.93, 0.94, 0.97)             # editor text color (base of the _ov overlays)
+var _palette_sig := ""                                 # signature of the theme used to build the UI
 
-# Couleurs sémantiques : chacune n'a qu'un seul sens dans toute l'UI.
-const COLOR_FAV := Color(0.98, 0.78, 0.32)                        # favoris (or)
-const COLOR_RES_ACTION := Color(0.34, 0.76, 0.48)                 # copier/coller une ressource (vert)
-const COLOR_DANGER := Color(0.90, 0.36, 0.40)                     # suppression, erreurs (rouge)
+# Semantic colors: each one has a single meaning across the whole UI.
+const COLOR_FAV := Color(0.98, 0.78, 0.32)                        # favorites (gold)
+const COLOR_RES_ACTION := Color(0.34, 0.76, 0.48)                 # copy/paste a resource (green)
+const COLOR_DANGER := Color(0.90, 0.36, 0.40)                     # deletion, errors (red)
 
-# Noms de couleurs = ceux stockés par le dock Fichiers de Godot
+# Color names = the ones stored by Godot's FileSystem dock
 const FOLDER_COLORS := {
 	"red": Color(0.95, 0.35, 0.35), "orange": Color(0.98, 0.58, 0.25),
 	"yellow": Color(0.96, 0.80, 0.25), "green": Color(0.35, 0.78, 0.45),
@@ -64,20 +64,20 @@ const FOLDER_COLORS := {
 }
 const DEFAULT_FOLDER_COLOR := Color(0.35, 0.65, 0.98)
 
-# Liseré de couleur sous chaque vignette (en liste : barre à gauche), une couleur par type d'asset,
-# comme dans le Content Browser d'Unreal. Mets SHOW_TYPE_BAR à false pour le désactiver.
+# Color strip under each thumbnail (in list view: bar on the left), one color per asset type,
+# like in Unreal's Content Browser. Set SHOW_TYPE_BAR to false to disable it.
 const SHOW_TYPE_BAR := true
 const TYPE_COLORS := {
-	"scene": Color(0.30, 0.58, 0.98),      # scènes .tscn / .scn — bleu
-	"script": Color(0.35, 0.78, 0.45),     # scripts — vert
-	"model": Color(0.68, 0.45, 0.95),      # modèles 3D et meshes — violet
-	"image": Color(0.98, 0.50, 0.16),      # textures / images — orange franc
-	"audio": Color(0.95, 0.80, 0.18),      # sons — jaune/or, bien distinct de l'orange ci-dessus
-	"shader": Color(0.95, 0.45, 0.72),     # shaders — rose
-	"material": Color(0.20, 0.80, 0.55),   # matériaux — vert-turquoise
-	"animation": Color(0.35, 0.68, 0.98),  # animations — bleu ciel, distinct du turquoise ci-dessus
-	"font": Color(0.85, 0.72, 0.55),       # polices — beige
-	"resource": Color(0.60, 0.62, 0.68),   # toute autre ressource / fichier — gris
+	"scene": Color(0.30, 0.58, 0.98),      # .tscn / .scn scenes — blue
+	"script": Color(0.35, 0.78, 0.45),     # scripts — green
+	"model": Color(0.68, 0.45, 0.95),      # 3D models and meshes — purple
+	"image": Color(0.98, 0.50, 0.16),      # textures / images — bright orange
+	"audio": Color(0.95, 0.80, 0.18),      # sounds — yellow/gold, clearly distinct from the orange above
+	"shader": Color(0.95, 0.45, 0.72),     # shaders — pink
+	"material": Color(0.20, 0.80, 0.55),   # materials — teal
+	"animation": Color(0.35, 0.68, 0.98),  # animations — sky blue, distinct from the teal above
+	"font": Color(0.85, 0.72, 0.55),       # fonts — beige
+	"resource": Color(0.60, 0.62, 0.68),   # any other resource / file — gray
 }
 
 var is_open := false
@@ -86,9 +86,9 @@ var current_dir := "res://"
 var _history: PackedStringArray = PackedStringArray(["res://"])
 var _history_i := 0
 var _favorites: PackedStringArray = PackedStringArray()
-var _fav_migrated := false          # anciens favoris locaux déjà fusionnés dans ceux de Godot
+var _fav_migrated := false          # old local favorites already merged into Godot's
 var _recents: PackedStringArray = PackedStringArray()
-var _sets: Dictionary = {}          # nom du set -> Array de chemins
+var _sets: Dictionary = {}          # set name -> Array of paths
 var _active_set := ""
 var _collapsed: Dictionary = {}
 var _tween: Tween
@@ -113,17 +113,17 @@ var _copy_target_path := ""
 var _copy_tween: Tween
 var _pending_select := ""
 var _selected_filter := 0
-var _hidden: PackedStringArray = PackedStringArray()   # éléments masqués (dossier = chemin terminé par "/")
+var _hidden: PackedStringArray = PackedStringArray()   # hidden items (folder = path ending with "/")
 var _show_hidden := false
-var _search_all := true         # recherche dans tout le projet (sinon : dossier courant)
+var _search_all := true         # search the whole project (otherwise: current folder)
 var _last_script_ext := "gd"
-var _index: Array = []          # index à plat des noms de fichiers/dossiers (recherche globale)
+var _index: Array = []          # flat index of file/folder names (global search)
 var _index_dirty := true
 var _btn_scope: Button
 var _active_left_tab := 0
 var _syncing_tree := false
-var _zoom_grid := 80.0             # zoom mémorisé du mode grille (taille des miniatures)
-var _zoom_list := 22.0             # zoom mémorisé du mode liste (taille des icônes)
+var _zoom_grid := 80.0             # remembered grid-mode zoom (thumbnail size)
+var _zoom_list := 22.0             # remembered list-mode zoom (icon size)
 
 var _split: HSplitContainer
 var _left_vbox: VBoxContainer
@@ -171,8 +171,8 @@ var _field_uid: VBoxContainer
 var _details_card: PanelContainer
 var _details_sep_info: ColorRect
 var _details_card_sep: ColorRect
-var _btn_labels: Dictionary = {}     # bouton -> [libellé, info-bulle]
-var _details_compact := false        # true : boutons en une ligne d'icônes seules
+var _btn_labels: Dictionary = {}     # button -> [label, tooltip]
+var _details_compact := false        # true: buttons on a single row of icon-only buttons
 var _btn_grid: Button
 var _btn_list: Button
 var _btn_details: Button
@@ -193,24 +193,24 @@ var _btn_fwd: Button
 var _btn_up: Button
 var _outside_close_msec := -1000
 var _card_images := {}
-var _preview_cache := {}       # chemin -> miniature Godot (null = échec)
-var _preview_pending := {}     # chemins déjà envoyés au previewer
-var _svg_queue: Array = []     # [chemin, taille cible] : SVG à rastériser nous-mêmes (nets à toute taille)
-var _svg_px := {}              # chemin -> taille (px) de la dernière rastérisation réussie
-var _svg_fail := {}            # SVG que Godot n'a pas pu rastériser : on retombe sur sa miniature
-var _path_index := {}          # chemin -> index dans _list
-var _item_colors := PackedColorArray()   # couleur du liseré de chaque item de _list (transparent = aucun)
+var _preview_cache := {}       # path -> Godot thumbnail (null = failure)
+var _preview_pending := {}     # paths already sent to the previewer
+var _svg_queue: Array = []     # [path, target size]: SVGs we rasterize ourselves (sharp at any size)
+var _svg_px := {}              # path -> size (px) of the last successful rasterization
+var _svg_fail := {}            # SVGs Godot could not rasterize: we fall back to its thumbnail
+var _path_index := {}          # path -> index in _list
+var _item_colors := PackedColorArray()   # color of each _list item's strip (transparent = none)
 var _bar_style: StyleBoxFlat
-var _dir_paths := {}           # chemins des dossiers affichés
-var _drop_list_idx := -1        # dossier de la liste surligné pendant un glisser-déposer
-var _drop_tree_item: TreeItem   # dossier de l'arbre surligné pendant un glisser-déposer
-var _drop_whole := false        # dépôt dans le dossier courant (zone vide) : cadre autour de la liste
-var _mq_active := false         # sélection par rectangle (« lasso ») en cours
+var _dir_paths := {}           # paths of the displayed folders
+var _drop_list_idx := -1        # list folder highlighted during a drag and drop
+var _drop_tree_item: TreeItem   # tree folder highlighted during a drag and drop
+var _drop_whole := false        # drop into the current folder (empty area): frame around the list
+var _mq_active := false         # rectangle selection ("lasso") in progress
 var _mq_moved := false
-var _mq_start := Vector2.ZERO   # départ en coordonnées « contenu » (défilement inclus)
-var _mq_cur := Vector2.ZERO     # position courante de la souris (coordonnées de la liste)
-var _mq_base: PackedInt32Array = PackedInt32Array()   # sélection de départ (Ctrl / Maj)
-var _tree_items := {}          # chemin normalisé -> TreeItem
+var _mq_start := Vector2.ZERO   # start in "content" coordinates (scroll included)
+var _mq_cur := Vector2.ZERO     # current mouse position (list coordinates)
+var _mq_base: PackedInt32Array = PackedInt32Array()   # starting selection (Ctrl / Shift)
+var _tree_items := {}          # normalized path -> TreeItem
 var _dirty := true
 var _tree_dirty := true
 var _save_dirty := false
@@ -282,7 +282,7 @@ func _make_timer(delay: float, cb: Callable) -> Timer:
 
 
 func _on_fs_changed() -> void:
-	# Rien à reconstruire tant que le tiroir est fermé : on marque juste "sale".
+	# Nothing to rebuild while the drawer is closed: we just mark it "dirty".
 	_dirty = true
 	_tree_dirty = true
 	_index_dirty = true
@@ -307,10 +307,10 @@ func _apply_saved_state() -> void:
 	_details_panel.visible = _details_visible
 
 
-## Palette du tiroir = celle de l'éditeur. Les fonds viennent de "Couleur de base" et "Contraste"
-## (Godot en tire dark_color_1/2/3 avec base.lerp(noir, contraste), contraste * 1.5, contraste * 2).
-## On lit ces couleurs sur le thème de l'éditeur (elles suivent aussi les presets), et on retombe sur
-## le calcul à partir des réglages si elles sont absentes.
+## Drawer palette = the editor's. Backgrounds come from "Base Color" and "Contrast"
+## (Godot derives dark_color_1/2/3 from them with base.lerp(black, contrast), contrast * 1.5, contrast * 2).
+## We read those colors from the editor theme (they also follow the presets), and fall back to
+## computing them from the settings if they are missing.
 func _update_palette() -> void:
 	var base := EditorInterface.get_base_control()
 	var es := EditorInterface.get_editor_settings()
@@ -343,15 +343,15 @@ func _update_palette() -> void:
 	font = _solid(font)
 
 	_font_color = font
-	# Les panneaux utilisent d1 (le moins sombre) : avec un contraste élevé, d2 / d3 deviennent
-	# quasi noirs. Le fond du tiroir et les champs en creux prennent d2, toujours plus foncés que les panneaux.
-	COLOR_BG_MAIN = d2            # fondation (le tiroir lui-même)
-	COLOR_HEADER = d1             # barre du haut
-	COLOR_LEFT_PANEL = d1         # arbre des dossiers
-	COLOR_CENTER_PANEL = d1       # grille / liste d'assets
-	COLOR_RIGHT_PANEL = d1        # panneau de détails
-	COLOR_FOOTER = d1             # barre de statut
-	COLOR_PATH_BG = d2            # conteneurs en creux de la barre du haut
+	# Panels use d1 (the least dark): with a high contrast, d2 / d3 become
+	# almost black. The drawer background and the inset fields use d2, always darker than the panels.
+	COLOR_BG_MAIN = d2            # foundation (the drawer itself)
+	COLOR_HEADER = d1             # top bar
+	COLOR_LEFT_PANEL = d1         # folder tree
+	COLOR_CENTER_PANEL = d1       # asset grid / list
+	COLOR_RIGHT_PANEL = d1        # details panel
+	COLOR_FOOTER = d1             # status bar
+	COLOR_PATH_BG = d2            # inset containers of the top bar
 	COLOR_BORDER = _with_a(base_c.lerp(font, 0.22), 0.65)
 	COLOR_POPUP_BG = _with_a(d1, 0.97)
 	COLOR_CARD_BG = _with_a(d1, 0.96)
@@ -362,7 +362,7 @@ func _update_palette() -> void:
 	_palette_sig = _palette_signature()
 
 
-## Empreinte du thème actuel : sert au plugin pour savoir s'il faut reconstruire le tiroir.
+## Fingerprint of the current theme: lets the plugin know whether the drawer must be rebuilt.
 func _palette_signature() -> String:
 	var base := EditorInterface.get_base_control()
 	var es := EditorInterface.get_editor_settings()
@@ -386,8 +386,8 @@ func _with_a(c: Color, a: float) -> Color:
 	return Color(c.r, c.g, c.b, a)
 
 
-## Surcouche translucide dans la couleur du texte de l'éditeur (survols, séparateurs...).
-## Remplace les anciens Color(1, 1, 1, a), invisibles sur un thème clair.
+## Translucent overlay in the editor's text color (hovers, separators...).
+## Replaces the old Color(1, 1, 1, a), invisible on a light theme.
 func _ov(a: float) -> Color:
 	return Color(_font_color.r, _font_color.g, _font_color.b, a)
 
@@ -402,14 +402,14 @@ func _make_stylebox(bg: Color, border: Color = Color.TRANSPARENT, radius: int = 
 	return style
 
 
-## Éclaircit une couleur pour un état survolé — un seul réglage utilisé partout (chips,
-## lignes de liste, boutons flottants) pour que le "ressenti" du survol soit identique
-## dans tout le tiroir plutôt qu'un peu différent selon l'endroit où on regarde.
+## Lightens a color for a hovered state — a single setting used everywhere (chips,
+## list rows, floating buttons) so the hover "feel" is identical
+## across the whole drawer rather than slightly different depending on where you look.
 func _hover_c(c: Color) -> Color:
 	return c.lightened(0.09)
 
 
-## Assombrit une couleur pour un état pressé/actif — pendant de _hover_c() ci-dessus.
+## Darkens a color for a pressed/active state — counterpart of _hover_c() above.
 func _press_c(c: Color) -> Color:
 	return c.darkened(0.16)
 
@@ -418,16 +418,16 @@ func _setup_style() -> void:
 	var accent: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
 	var style := StyleBoxFlat.new()
 	style.bg_color = COLOR_BG_MAIN
-	# Contour fin et discret (pas un trait plein saturé) : le tiroir doit se lire comme une
-	# carte élevée au-dessus de l'éditeur, pas comme une fenêtre encadrée en néon.
+	# Thin, discreet outline (not a saturated solid line): the drawer must read as a
+	# raised card above the editor, not as a neon-framed window.
 	style.set_border_width_all(1)
 	style.border_color = Color(accent.r, accent.g, accent.b, 0.55)
 	style.set_corner_radius_all(12)
-	# Ombre douce et large plutôt que serrée : c'est ce qui donne l'impression de profondeur
-	# "carte flottante" dans les UI pro, à l'inverse d'un liseré dur qui fait "fenêtre de jeu".
+	# Soft, wide shadow rather than tight: that is what gives the "floating card" feel
+	# of depth in pro UIs, as opposed to a hard edge that reads as a "game window".
 	style.shadow_color = Color(0, 0, 0, 0.30)
 	style.shadow_size = 12
-	style.shadow_offset = Vector2(0, -12)   # décalée vers le haut : rien ne dépasse sous le tiroir
+	style.shadow_offset = Vector2(0, -12)   # shifted upward: nothing sticks out below the drawer
 	add_theme_stylebox_override("panel", style)
 	_panel_style = style
 
@@ -477,12 +477,12 @@ func _build_ui() -> void:
 	_split.split_offset = 0
 	main_vbox.add_child(_split)
 
-	# --- PANNEAU GAUCHE ---
+	# --- LEFT PANEL ---
 	var left_panel := VBoxContainer.new()
 	left_panel.custom_minimum_size = Vector2(180, 0)
 	left_panel.add_theme_constant_override("separation", 4)
 
-	# Onglets (Dossiers / Favoris / Récents / Sets) dans leur propre conteneur
+	# Tabs (Folders / Favorites / Recents / Sets) in their own container
 	var tabs_panel := PanelContainer.new()
 	tabs_panel.add_theme_stylebox_override("panel", _make_stylebox(COLOR_HEADER, COLOR_BORDER, 6, 1))
 	var tabs_pad := _pad(3)
@@ -492,7 +492,7 @@ func _build_ui() -> void:
 	tabs_pad.add_child(left_tabs)
 	left_panel.add_child(tabs_panel)
 
-	# Contenu de l'onglet : même fond pour l'arbre et les listes
+	# Tab content: same background for the tree and the lists
 	var left_content := PanelContainer.new()
 	left_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left_content.add_theme_stylebox_override("panel", _make_stylebox(COLOR_LEFT_PANEL, COLOR_BORDER, 6, 1))
@@ -563,7 +563,7 @@ func _build_ui() -> void:
 	_left_vbox.add_child(_btn_new_set)
 	_split.add_child(left_panel)
 
-	# --- ZONE CENTRALE ---
+	# --- CENTER AREA ---
 	var center_panel := PanelContainer.new()
 	center_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	center_panel.add_theme_stylebox_override("panel", _make_stylebox(COLOR_CENTER_PANEL, COLOR_BORDER, 6, 1))
@@ -578,9 +578,9 @@ func _build_ui() -> void:
 	_list.same_column_width = true
 	_list.max_text_lines = 2
 	_list.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
-	# Le focus clavier reste fonctionnel (flèches, activation...), mais sans le cadre accent
-	# que Godot dessine par défaut autour du contrôle qui a le focus — ça ressemblait à une
-	# sélection involontaire du panneau entier à l'ouverture du tiroir.
+	# Keyboard focus keeps working (arrows, activation...), but without the accent frame
+	# that Godot draws by default around the focused control — it looked like an unintended
+	# selection of the whole panel when the drawer opened.
 	_list.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	_list.item_activated.connect(_on_item_activated)
 	_list.draw.connect(_draw_type_bars)
@@ -633,15 +633,15 @@ func _build_ui() -> void:
 	_empty_reset.pressed.connect(func() -> void: _set_filter(0))
 	_empty_state.add_child(_empty_reset)
 	center_pad.add_child(_empty_state)
-	# Centre + détails : HSplitContainer redimensionnable (2 enfants, compatible Godot 4.2+).
+	# Center + details: resizable HSplitContainer (2 children, compatible with Godot 4.2+).
 	var right_split := HSplitContainer.new()
 	right_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right_split.dragged.connect(_on_details_split_dragged)
 	right_split.add_child(center_panel)
 	_details_panel = _build_details_panel()
 	right_split.add_child(_details_panel)
-	# offset=0 donnerait au panneau (non-expand, second enfant) sa largeur plancher ;
-	# un offset négatif lui redonne la largeur mémorisée (ou la largeur par défaut au 1er lancement).
+	# offset=0 would give the panel (non-expand, second child) its minimum width;
+	# a negative offset gives it back the remembered width (or the default width on first launch).
 	right_split.split_offset = -int(maxf(_details_width - DETAILS_MIN_WIDTH, 0.0))
 	_split.add_child(right_split)
 
@@ -653,8 +653,8 @@ func _build_ui() -> void:
 	footer_pad.add_child(_build_footer())
 	main_vbox.add_child(footer)
 
-	# Menu contextuel = simple PanelContainer posé sur l'overlay de l'éditeur (et non une
-	# fenêtre PopupPanel) : plus aucun coin carré noir derrière les bords arrondis.
+	# Context menu = a simple PanelContainer placed on the editor overlay (rather than a
+	# PopupPanel window): no more square black corners behind the rounded edges.
 	_ctx_popup = PanelContainer.new()
 	_ctx_popup.visible = false
 	_ctx_popup.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -675,9 +675,9 @@ func _build_ui() -> void:
 	_build_paste_pop()
 
 
-## Petit bouton flottant "Coller" qui apparaît près de n'importe quel champ ressource
-## de l'Inspecteur (compatible avec la ressource copiée) quand la souris le survole —
-## comme le glisser-déposer d'assets dans le Content Browser d'Unreal.
+## Small floating "Paste" button that appears near any resource field
+## of the Inspector (compatible with the copied resource) when the mouse hovers it —
+## like dragging and dropping assets in Unreal's Content Browser.
 func _build_paste_pop() -> void:
 	var base := EditorInterface.get_base_control()
 
@@ -690,7 +690,7 @@ func _build_paste_pop() -> void:
 	_paste_pop.modulate.a = 0.0
 	_paste_pop.focus_mode = Control.FOCUS_NONE
 	_paste_pop.mouse_filter = Control.MOUSE_FILTER_STOP
-	_paste_pop.z_index = 200  # au-dessus du panneau du tiroir lui-même (z_index = 128)
+	_paste_pop.z_index = 200  # above the drawer panel itself (z_index = 128)
 	if base.has_theme_icon("ActionPaste", "EditorIcons"):
 		_paste_pop.icon = base.get_theme_icon("ActionPaste", "EditorIcons")
 	elif base.has_theme_icon("ActionCopy", "EditorIcons"):
@@ -709,8 +709,8 @@ func _build_paste_pop() -> void:
 	_build_copy_pop()
 
 
-## Petit bouton flottant "Copier" (icône seule, même vert que "Coller") qui apparaît au
-## survol d'une ressource dans la liste du tiroir — pendant du bouton "Coller" côté Inspecteur.
+## Small floating "Copy" button (icon only, same green as "Paste") that appears when
+## hovering a resource in the drawer's list — counterpart of the "Paste" button on the Inspector side.
 func _build_copy_pop() -> void:
 	var base := EditorInterface.get_base_control()
 	_copy_pop = Button.new()
@@ -722,7 +722,7 @@ func _build_copy_pop() -> void:
 	_copy_pop.modulate.a = 0.0
 	_copy_pop.focus_mode = Control.FOCUS_NONE
 	_copy_pop.mouse_filter = Control.MOUSE_FILTER_STOP
-	_copy_pop.z_index = 200  # au-dessus du panneau du tiroir lui-même (z_index = 128)
+	_copy_pop.z_index = 200  # above the drawer panel itself (z_index = 128)
 	if base.has_theme_icon("ActionCopy", "EditorIcons"):
 		_copy_pop.icon = base.get_theme_icon("ActionCopy", "EditorIcons")
 	elif base.has_theme_icon("Duplicate", "EditorIcons"):
@@ -741,15 +741,15 @@ func _build_copy_pop() -> void:
 
 func _build_toast() -> void:
 	var base := EditorInterface.get_base_control()
-	# Ajouté au niveau de l'éditeur (comme la pastille d'aide), pas comme enfant du tiroir :
-	# il doit rester visible même quand le tiroir est fermé (ex. après un collage Alt+V).
+	# Added at the editor level (like the hint pill), not as a child of the drawer:
+	# it must stay visible even when the drawer is closed (e.g. after an Alt+V paste).
 	_toast_overlay = Control.new()
 	_toast_overlay.name = "AssetDrawerToastOverlay"
 	_toast_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	base.add_child(_toast_overlay)
 
-	# Bande centrée en bas de l'éditeur qui accueille le toast (auto-centré par le CenterContainer).
+	# Strip centered at the bottom of the editor that hosts the toast (auto-centered by the CenterContainer).
 	var bottom_bar := CenterContainer.new()
 	bottom_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bottom_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -760,8 +760,8 @@ func _build_toast() -> void:
 	_toast = PanelContainer.new()
 	_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast.modulate.a = 0.0
-	# Doit rester lisible même par-dessus la pastille "Ctrl+Espace" (z_index = 200) et le
-	# panneau du tiroir (z_index = 128), puisque les deux occupent la même zone en bas de l'écran.
+	# Must stay readable even above the "Ctrl+Space" pill (z_index = 200) and the
+	# drawer panel (z_index = 128), since both occupy the same area at the bottom of the screen.
 	_toast.z_index = 300
 	var accent: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
 	_toast.add_theme_stylebox_override("panel", _make_stylebox(COLOR_POPUP_BG, Color(accent.r, accent.g, accent.b, 0.85), 8, 1))
@@ -784,7 +784,7 @@ func _build_toolbar() -> Control:
 	row.add_theme_constant_override("separation", 5)
 	wrap.add_child(row)
 
-	# Barre du haut : chaque groupe dans un conteneur sombre de même hauteur, même contour, mêmes coins
+	# Top bar: each group in a dark container of the same height, same outline, same corners
 	var accent_bar: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
 
 	# 1) Navigation
@@ -805,13 +805,13 @@ func _build_toolbar() -> Control:
 	_btn_up.pressed.connect(_go_up)
 	nav_row.add_child(_btn_up)
 
-	# 2) Fil d'Ariane
+	# 2) Breadcrumb
 	_breadcrumbs = HBoxContainer.new()
 	_breadcrumbs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_breadcrumbs.clip_contents = true
 	row.add_child(_bar_panel(_breadcrumbs, true))
 
-	# 3) Recherche : même fond / contour que les conteneurs
+	# 3) Search: same background / outline as the containers
 	_search = LineEdit.new()
 	_search.placeholder_text = L.t("Rechercher... (Ctrl+F)")
 	_search.clear_button_enabled = true
@@ -830,7 +830,7 @@ func _build_toolbar() -> Control:
 	_search.text_changed.connect(func(_t: String) -> void: _search_timer.start())
 	row.add_child(_search)
 
-	# Portée de la recherche : tout le projet / dossier courant
+	# Search scope: whole project / current folder
 	_btn_scope = _icon_btn("Filesystem,Folder", L.t("Projet"))
 	_btn_scope.toggle_mode = true
 	_btn_scope.button_pressed = _search_all
@@ -839,7 +839,7 @@ func _build_toolbar() -> Control:
 	row.add_child(_bar_panel(_btn_scope))
 	_update_search_ui()
 
-	# 4) Mode d'affichage (grille / liste)
+	# 4) Display mode (grid / list)
 	var view_box := HBoxContainer.new()
 	view_box.add_theme_constant_override("separation", 2)
 	row.add_child(_bar_panel(view_box))
@@ -882,7 +882,7 @@ func _build_toolbar() -> Control:
 	_style_zoom_slider(accent_bar)
 	row.add_child(_bar_panel(_zoom, false, 8))
 
-	# 6) Actions : détails, épingler, dock, fermer
+	# 6) Actions: details, pin, dock, close
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 2)
 	row.add_child(_bar_panel(actions))
@@ -922,7 +922,7 @@ func _build_toolbar() -> Control:
 	close_btn.pressed.connect(close)
 	actions.add_child(close_btn)
 
-	# Ligne 2 : filtres
+	# Row 2: filters
 	var filters_box := HBoxContainer.new()
 	filters_box.add_theme_constant_override("separation", 3)
 	var filters := [L.t("Tout"), L.t("Scènes"), "Scripts", L.t("Modèles"), "Images", "Audio", "Shaders"]
@@ -946,8 +946,8 @@ func _build_details_panel() -> PanelContainer:
 	panel.custom_minimum_size = Vector2(DETAILS_MIN_WIDTH, 0)
 	panel.add_theme_stylebox_override("panel", _make_stylebox(COLOR_RIGHT_PANEL, COLOR_BORDER, 6, 1))
 
-	# Tout est dans un ScrollContainer : le panneau peut être très bas, on fait défiler.
-	# Quand il n'y a plus la place, les boutons passent sur une seule ligne, en icônes seules.
+	# Everything is in a ScrollContainer: the panel can be very short, so it scrolls.
+	# When there is no more room, the buttons switch to a single row of icon-only buttons.
 	_details_scroll = ScrollContainer.new()
 	_details_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_details_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
@@ -964,13 +964,13 @@ func _build_details_panel() -> PanelContainer:
 	margin.add_child(dv)
 	_details_dv = dv
 
-	# --- En-tête : vignette encadrée à gauche ; à droite le nom puis des pastilles (type, taille, date) ---
+	# --- Header: framed thumbnail on the left; on the right the name then chips (type, size, date) ---
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 6)
 	dv.add_child(head)
 
-	# Vignette sans cadre : une petite ombre portée est dessinée derrière l'image elle-même
-	# (silhouettes noires légèrement agrandies et de plus en plus transparentes = ombre douce).
+	# Frameless thumbnail: a small drop shadow is drawn behind the image itself
+	# (slightly enlarged black silhouettes that get more and more transparent = soft shadow).
 	var thumb_pad := _pad(4)
 	thumb_pad.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	head.add_child(thumb_pad)
@@ -1027,7 +1027,7 @@ func _build_details_panel() -> PanelContainer:
 	_details_type_row.add_child(_chip_size)
 	_details_type_row.add_child(_chip_date)
 
-	# --- Séparateur + carte d'infos en creux : chemin, UID (masquée si rien à montrer) ---
+	# --- Separator + inset info card: path, UID (hidden if there is nothing to show) ---
 	_details_sep_info = _detail_sep()
 	dv.add_child(_details_sep_info)
 
@@ -1055,10 +1055,10 @@ func _build_details_panel() -> PanelContainer:
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dv.add_child(spacer)
 
-	# --- Séparateur avant la zone d'actions ---
+	# --- Separator before the actions area ---
 	dv.add_child(_detail_sep())
 
-	# --- Boutons : colonne avec texte + icône, ou ligne d'icônes seules quand ça manque de place ---
+	# --- Buttons: column with text + icon, or a row of icon-only buttons when space is short ---
 	_details_btn_box = BoxContainer.new()
 	_details_btn_box.vertical = true
 	_details_btn_box.add_theme_constant_override("separation", 3)
@@ -1077,8 +1077,8 @@ func _build_details_panel() -> PanelContainer:
 
 	_btn_copy_res = _detail_btn("ActionCopy,Duplicate", L.t("Copier la ressource"),
 		L.t("Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou Alt+V au clavier)"))
-	# Même vert que le bouton "Coller la ressource" (COLOR_RES_ACTION) : les deux actions
-	# forment une paire visuelle (copier ici → coller là-bas).
+	# Same green as the "Paste resource" button (COLOR_RES_ACTION): the two actions
+	# form a visual pair (copy here → paste over there).
 	_btn_copy_res.add_theme_stylebox_override("normal", _make_stylebox(COLOR_RES_ACTION, Color.TRANSPARENT, 4))
 	_btn_copy_res.add_theme_stylebox_override("hover", _make_stylebox(_hover_c(COLOR_RES_ACTION), Color(1, 1, 1, 0.55), 4, 1))
 	_btn_copy_res.add_theme_stylebox_override("pressed", _make_stylebox(_press_c(COLOR_RES_ACTION), Color.WHITE, 4, 1))
@@ -1117,12 +1117,12 @@ func _build_details_panel() -> PanelContainer:
 	return panel
 
 
-## Pastille arrondie (type, taille, date) autour d'un Label.
+## Rounded chip (type, size, date) around a Label.
 func _make_chip(lbl: Label, tint: Color) -> PanelContainer:
 	var chip := PanelContainer.new()
 	chip.add_theme_stylebox_override("panel", _make_stylebox(tint, Color.TRANSPARENT, 4))
 	var pad := _pad(2, 0)
-	# Marges verticales négatives : on retire l'interligne que le Label ajoute autour du texte
+	# Negative vertical margins: removes the line spacing the Label adds around the text
 	pad.add_theme_constant_override("margin_top", -2)
 	pad.add_theme_constant_override("margin_bottom", -2)
 	chip.add_child(pad)
@@ -1134,7 +1134,7 @@ func _make_chip(lbl: Label, tint: Color) -> PanelContainer:
 	return chip
 
 
-## Champ « titre discret au-dessus, valeur dessous » : lisible même pour les valeurs longues.
+## "Discreet title above, value below" field: readable even for long values.
 func _make_field(title: String, val: Label) -> VBoxContainer:
 	var f := VBoxContainer.new()
 	f.add_theme_constant_override("separation", 1)
@@ -1150,14 +1150,14 @@ func _make_field(title: String, val: Label) -> VBoxContainer:
 	return f
 
 
-## Ajoute des points de coupure invisibles (espace de largeur nulle) après _ . / -
-## pour que les noms longs passent à la ligne proprement plutôt qu'au milieu d'un mot.
+## Adds invisible break points (zero-width space) after _ . / -
+## so that long names wrap cleanly instead of in the middle of a word.
 func _soft_wrap(t: String) -> String:
 	var zw := char(0x200B)
 	return t.replace("_", "_" + zw).replace(".", "." + zw).replace("/", "/" + zw).replace("-", "-" + zw)
 
 
-## Filet fin de séparation entre les zones du panneau de détails.
+## Thin separator line between the zones of the details panel.
 func _detail_sep() -> ColorRect:
 	var r := ColorRect.new()
 	r.custom_minimum_size = Vector2(0, 1)
@@ -1166,7 +1166,7 @@ func _detail_sep() -> ColorRect:
 	return r
 
 
-## Bouton du panneau de détails : icône (premier nom trouvé dans la liste) + libellé + info-bulle.
+## Details panel button: icon (first name found in the list) + label + tooltip.
 func _detail_btn(icon_names: String, label: String, tip: String = "") -> Button:
 	var b := Button.new()
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1203,7 +1203,7 @@ func _set_btn_label(b: Button, label: String) -> void:
 	_apply_btn_mode(b)
 
 
-## Texte + icône à gauche (mode normal) ou icône seule centrée, texte en info-bulle (mode compact).
+## Text + icon on the left (normal mode) or centered icon only, text as tooltip (compact mode).
 func _apply_btn_mode(b: Button) -> void:
 	var d: Array = _btn_labels.get(b, ["", ""])
 	var label: String = d[0]
@@ -1228,7 +1228,7 @@ func _set_fav_state(path: String) -> void:
 		_untint_btn_icon(_btn_fav)
 
 
-## Masque les infos vides (« - ») pour ne garder que ce qui est utile.
+## Hides empty info (« - ») to keep only what is useful.
 func _sync_details_meta() -> void:
 	if _details_type_row == null:
 		return
@@ -1248,15 +1248,15 @@ func _sync_details_meta() -> void:
 	_details_sep_info.visible = _details_card.visible
 
 
-## Bascule entre boutons en colonne (texte + icône) et en ligne d'icônes selon la place disponible.
-## La hauteur nécessaire au mode normal est recalculée à chaque fois (pas de valeur mémorisée) :
-## hauteur actuelle du contenu, moins la zone de boutons actuelle, plus des boutons empilés.
+## Switches between buttons in a column (text + icon) and a row of icons depending on the available room.
+## The height needed for normal mode is recomputed every time (no remembered value):
+## current content height, minus the current button area, plus the stacked buttons.
 func _update_details_layout() -> void:
 	if _details_scroll == null or _details_dv == null:
 		return
 	var avail := _details_scroll.size.y
 	if avail <= 0.0 or _details_scroll.size.x < 60.0:
-		return   # pas encore mis en page
+		return   # not laid out yet
 	var n := 0
 	for b in _btn_labels.keys():
 		if b.visible:
@@ -1313,7 +1313,7 @@ func _topbar_stylebox() -> StyleBoxFlat:
 	return _make_stylebox(COLOR_PATH_BG, COLOR_BORDER.darkened(0.25), 6, 1)
 
 
-# Conteneur sombre uniforme de la barre du haut (même hauteur, contour et coins)
+# Uniform dark container of the top bar (same height, outline and corners)
 func _bar_panel(inner: Control, expand: bool = false, pad_h: int = 3) -> PanelContainer:
 	var p := PanelContainer.new()
 	p.custom_minimum_size = Vector2(0, BAR_H)
@@ -1327,7 +1327,7 @@ func _bar_panel(inner: Control, expand: bool = false, pad_h: int = 3) -> PanelCo
 
 
 func _icon_btn(icon_name: String, fallback: String) -> Button:
-	# icon_name peut contenir plusieurs noms séparés par des virgules : le premier existant est utilisé
+	# icon_name can contain several names separated by commas: the first existing one is used
 	var b := Button.new()
 	b.focus_mode = Control.FOCUS_NONE
 	_style_ghost_button(b, 5, 2)
@@ -1357,8 +1357,8 @@ func _ghost_box(bg: Color, h: int, v: int) -> StyleBoxFlat:
 func _style_ghost_button(b: Button, h: int = 6, v: int = 3, active_bg: Color = Color.TRANSPARENT) -> void:
 	if active_bg.a <= 0.0:
 		active_bg = _ov(0.18)
-	# Transparent au repos, "panel" au survol ; état actif (bouton à bascule) plus marqué.
-	# flat doit rester à false, sinon Godot ne dessine aucun fond.
+	# Transparent at rest, "panel" on hover; active state (toggle button) more pronounced.
+	# flat must stay false, otherwise Godot draws no background.
 	b.flat = false
 	b.add_theme_stylebox_override("normal", _ghost_box(Color(1, 1, 1, 0.0), h, v))
 	b.add_theme_stylebox_override("hover", _ghost_box(_ov(0.10), h, v))
@@ -1369,8 +1369,8 @@ func _style_ghost_button(b: Button, h: int = 6, v: int = 3, active_bg: Color = C
 	_add_press_bounce(b)
 
 
-## Micro-interaction commune à tous les boutons "fantômes" : léger zoom au survol,
-## petit "squash" au clic. Donne au tiroir une sensation plus vivante et réactive.
+## Micro-interaction shared by all "ghost" buttons: slight zoom on hover,
+## small "squash" on click. Gives the drawer a livelier, more responsive feel.
 func _add_press_bounce(b: Button, hover_scale: float = 1.08, press_scale: float = 0.9) -> void:
 	b.pivot_offset = b.size * 0.5
 	b.resized.connect(func() -> void: b.pivot_offset = b.size * 0.5)
@@ -1394,11 +1394,11 @@ func _bounce_to(node: Control, target: Vector2, dur: float) -> void:
 	node.set_meta("_bounce_tween", t)
 
 
-## Surbrillance de sélection/survol plus douce (coins arrondis + léger halo accent)
-## que le rectangle carré par défaut de l'ItemList.
+## Softer selection/hover highlight (rounded corners + slight accent glow)
+## than the default square rectangle of the ItemList.
 func _style_item_list(list: ItemList) -> void:
 	var accent: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
-	# Sélection : fond teinté + contour net de 2 px + léger halo (le badge ✓ est dessiné par-dessus).
+	# Selection: tinted background + crisp 2 px outline + slight glow (the ✓ badge is drawn on top).
 	var sel := _make_stylebox(Color(accent.r, accent.g, accent.b, 0.20), Color(accent.r, accent.g, accent.b, 0.95), 8, 2)
 	sel.shadow_color = Color(accent.r, accent.g, accent.b, 0.35)
 	sel.shadow_size = 5
@@ -1406,7 +1406,7 @@ func _style_item_list(list: ItemList) -> void:
 	list.add_theme_stylebox_override("selected_focus", sel)
 	list.add_theme_stylebox_override("cursor", _make_stylebox(Color.TRANSPARENT, Color(accent.r, accent.g, accent.b, 0.45), 8, 1))
 	list.add_theme_stylebox_override("cursor_unfocused", StyleBoxEmpty.new())
-	# "hovered" n'existe qu'à partir de Godot 4.3 ; ignoré silencieusement sur les versions antérieures.
+	# "hovered" only exists from Godot 4.3; silently ignored on earlier versions.
 	list.add_theme_stylebox_override("hovered", _make_stylebox(_ov(0.07), _ov(0.14), 8, 1))
 
 
@@ -1418,7 +1418,7 @@ func _update_nav_buttons() -> void:
 	_btn_up.disabled = _active_set.is_empty() and current_dir == "res://"
 
 
-# ---------- Filtres & onglets ----------
+# ---------- Filters & tabs ----------
 
 func _set_filter(idx: int) -> void:
 	_selected_filter = idx
@@ -1523,7 +1523,7 @@ func _on_tab_list_clicked(idx: int, _at: Vector2, btn: int) -> void:
 
 
 
-# ---------- Rendu HD Anti-Flou ----------
+# ---------- Anti-blur HD rendering ----------
 
 func _sd_rounded_box(p: Vector2, b: Vector2, r: float) -> float:
 	var q := Vector2(absf(p.x), absf(p.y)) - b + Vector2(r, r)
@@ -1538,8 +1538,8 @@ func _bucket(size: int) -> int:
 
 
 func _get_hd_folder_icon(size: int) -> Texture2D:
-	# Icône en niveaux de gris : la couleur du dossier est appliquée par modulation
-	# (une seule texture par taille au lieu d'une par couleur).
+	# Grayscale icon: the folder color is applied by modulation
+	# (a single texture per size instead of one per color).
 	var cache_key := "folder_%d" % size
 	if _hd_icon_cache.has(cache_key):
 		return _hd_icon_cache[cache_key]
@@ -1553,7 +1553,7 @@ func _get_hd_folder_icon(size: int) -> Texture2D:
 	var body_size := Vector2(S * 0.42, S * 0.28)
 	var body_radius := S * 0.07
 
-	var tab_color := Color(0.78, 0.78, 0.78)   # = darkened(0.22) une fois teinté
+	var tab_color := Color(0.78, 0.78, 0.78)   # = darkened(0.22) once tinted
 	var body_color := Color.WHITE
 
 	for y in range(size):
@@ -1576,7 +1576,7 @@ func _get_hd_folder_icon(size: int) -> Texture2D:
 
 
 func _get_card_image(size: int) -> Image:
-	# Fond "carte" commun à tous les types de fichiers, calculé une seule fois par taille
+	# Common "card" background for all file types, computed only once per size
 	if _card_images.has(size):
 		return _card_images[size]
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
@@ -1622,13 +1622,13 @@ func _get_hd_file_icon(base: Control, type: String, size: int, with_card: bool =
 	var img: Image
 	var inner_size: int
 	if with_card:
-		# Vignette "carte" décorative (grille) : icône à 52 % pour un rendu homogène entre les types.
+		# Decorative "card" thumbnail (grid): icon at 52 % for a consistent look across types.
 		img = _get_card_image(size).duplicate() as Image
 		inner_size = int(size * 0.52)
 	else:
-		# Pas de carte : le conteneur qui affiche cette texture a déjà son propre cadre
-		# (panneau de détails), donc l'icône remplit la vignette au lieu de flotter au milieu
-		# d'une grande zone transparente.
+		# No card: the container that displays this texture already has its own frame
+		# (details panel), so the icon fills the thumbnail instead of floating in the middle
+		# of a large transparent area.
 		img = Image.create(size, size, false, Image.FORMAT_RGBA8)
 		inner_size = int(size * 0.82)
 	raw_img.resize(inner_size, inner_size, Image.INTERPOLATE_LANCZOS)
@@ -1642,7 +1642,7 @@ func _get_hd_file_icon(base: Control, type: String, size: int, with_card: bool =
 
 
 
-# ---------- Couleurs de dossiers (héritage comme dans le dock Fichiers) ----------
+# ---------- Folder colors (inherited, like in the FileSystem dock) ----------
 
 func _colors() -> Dictionary:
 	return ProjectSettings.get_setting("file_customization/folder_colors", {})
@@ -1682,7 +1682,7 @@ func _set_folder_color(path: String, color_key: String) -> void:
 	_refresh()
 
 
-# ---------- Rafraîchissement ----------
+# ---------- Refresh ----------
 
 func _refresh() -> void:
 	if not is_inside_tree() or _list == null:
@@ -1699,7 +1699,7 @@ func _refresh() -> void:
 	_path_index.clear()
 	_item_colors.clear()
 	_dir_paths.clear()
-	# Si le dossier courant a disparu, on remonte
+	# If the current folder is gone, go up
 	var fs := EditorInterface.get_resource_filesystem()
 	while _active_set.is_empty() and current_dir != "res://" and (fs.get_filesystem_path(current_dir) == null or (not _show_hidden and _is_hidden(current_dir))):
 		current_dir = current_dir.trim_suffix("/").get_base_dir()
@@ -1709,7 +1709,7 @@ func _refresh() -> void:
 	_update_nav_buttons()
 	_refresh_left_tab_content()
 
-	# entrée = [chemin, type, est_dossier, nom]
+	# entry = [path, type, is_folder, name]
 	var query := _search.text.strip_edges().to_lower()
 	var tokens := query.split(" ", false)
 	var entries: Array = []
@@ -1738,7 +1738,7 @@ func _refresh() -> void:
 		_search_entries(tokens, entries)
 
 	entries.sort_custom(func(a: Array, b: Array) -> bool:
-		# entrée = [chemin, type, est_dossier, nom, rang]  (rang : 0 nom exact, 1 commence par, 2 contient)
+		# entry = [path, type, is_folder, name, rank]  (rank: 0 exact name, 1 starts with, 2 contains)
 		var ra: int = a[4] if a.size() > 4 else 0
 		var rb: int = b[4] if b.size() > 4 else 0
 		if ra != rb:
@@ -1762,7 +1762,7 @@ func _refresh() -> void:
 		var label: String = e[3]
 		var is_hid := check_hidden and _is_hidden(path)
 		if show_parent:
-			# Résultats venant de plusieurs dossiers : on indique d'où ils viennent
+			# Results coming from several folders: show where they come from
 			var parent := path.trim_suffix("/").get_base_dir().trim_prefix("res://")
 			if parent.is_empty():
 				parent = "res://"
@@ -1792,7 +1792,7 @@ func _refresh() -> void:
 			_list.set_item_custom_fg_color(idx, Color(1, 1, 1, HIDDEN_ALPHA))
 	var shown := _list.item_count
 
-	# Restaure la sélection (ou sélectionne le nouvel élément créé)
+	# Restore the selection (or select the newly created item)
 	var reselect := prev_selected
 	if _pending_select != "":
 		reselect = PackedStringArray([_pending_select])
@@ -1824,7 +1824,7 @@ func _refresh() -> void:
 	_schedule_previews()
 
 
-## Couleur du liseré d'un asset selon son type (classe de ressource, sinon extension).
+## Strip color of an asset according to its type (resource class, otherwise extension).
 func _type_color(path: String, type: String) -> Color:
 	var ext := path.get_extension().to_lower()
 	var known := type != "" and ClassDB.class_exists(type)
@@ -1850,11 +1850,11 @@ func _type_color(path: String, type: String) -> Color:
 	return TYPE_COLORS[kind]
 
 
-# ItemList.get_item_rect() ne tient pas compte du défilement dans toutes les versions de Godot
-# (rectangle en coordonnées du contenu au lieu de coordonnées écran) : les liserés de type, les
-# badges et le bouton « Copier » restaient alors fixes pendant qu'on faisait défiler la liste.
-# On le détecte une fois par test de survol (qui, lui, est toujours correct) puis on corrige.
-var _rect_includes_scroll := -1   # -1 inconnu, 0 : rect sans défilement, 1 : rect déjà à l'écran
+# ItemList.get_item_rect() does not account for scrolling in every Godot version
+# (rectangle in content coordinates instead of screen coordinates): the type strips, the
+# badges and the "Copy" button then stayed fixed while the list was scrolled.
+# We detect it once with a hover test (which is always correct), then correct for it.
+var _rect_includes_scroll := -1   # -1 unknown, 0: rect without scroll, 1: rect already on screen
 
 
 func _item_rect(i: int, expand: bool = true) -> Rect2:
@@ -1882,14 +1882,14 @@ func _detect_rect_scroll(sv: float) -> void:
 			var as_screen := r.has_point(p)
 			r.position.y -= sv
 			var as_content := r.has_point(p)
-			if as_screen != as_content:   # résultat sans ambiguïté
+			if as_screen != as_content:   # unambiguous result
 				_rect_includes_scroll = 1 if as_screen else 0
 				return
 		y += 10.0
 
 
-## Dessine, par-dessus la liste, l'indicateur coloré de chaque item visible :
-## grille = barre incrustée en bas de la vignette ; liste = barre verticale à gauche.
+## Draws, on top of the list, the colored indicator of each visible item:
+## grid = bar inset at the bottom of the thumbnail; list = vertical bar on the left.
 func _draw_type_bars() -> void:
 	if not SHOW_TYPE_BAR or _list == null:
 		return
@@ -1899,9 +1899,9 @@ func _draw_type_bars() -> void:
 	if _bar_style == null:
 		_bar_style = StyleBoxFlat.new()
 		_bar_style.set_corner_radius_all(2)
-		# Fin contour sombre : la barre reste lisible même sur une vignette d'une couleur
-		# proche de la sienne (sans lui, une vignette bleue avec une barre "scène" bleue
-		# se fondrait presque entièrement dedans).
+		# Thin dark outline: the bar stays readable even on a thumbnail of a color
+		# close to its own (without it, a blue thumbnail with a blue "scene" bar
+		# would almost completely blend into it).
 		_bar_style.border_color = Color(0, 0, 0, 0.55)
 		_bar_style.set_border_width_all(1)
 	var view_h := _list.size.y
@@ -1916,20 +1916,20 @@ func _draw_type_bars() -> void:
 		if r.end.y < 0.0:
 			continue
 		if r.position.y > view_h:
-			break   # les items sont rangés de haut en bas : la suite est hors écran
+			break   # items are laid out top to bottom: the rest is off screen
 		_bar_style.bg_color = Color(c.r, c.g, c.b, 0.95)
 		if _view_list:
 			_list.draw_style_box(_bar_style, Rect2(r.position.x + 1.0, r.position.y + 3.0, 3.0, maxf(r.size.y - 6.0, 4.0)))
 		else:
 			var x := r.position.x + floorf((r.size.x - icon_w) * 0.5)
-			# Incrustée dans les derniers pixels de la vignette (pas dans la marge avant le
-			# texte) : elle ne peut donc jamais chevaucher le nom de fichier, même sur 2 lignes.
+			# Inset in the last pixels of the thumbnail (not in the margin before the
+			# text): so it can never overlap the file name, even on 2 lines.
 			var y := r.position.y + margin + icon_w - thick - 1.0
 			_list.draw_style_box(_bar_style, Rect2(x, y, icon_w, thick))
 
 
-## Par-dessus la liste : badges ✓ des éléments sélectionnés, cible de dépôt (dossier surligné avec
-## pastille « Déplacer ici », ou cadre autour de la liste) et rectangle de sélection.
+## On top of the list: ✓ badges of selected items, drop target (highlighted folder with
+## "Move here" pill, or frame around the list) and the selection rectangle.
 func _draw_list_overlay() -> void:
 	if _list == null:
 		return
@@ -1970,7 +1970,7 @@ func _draw_list_overlay() -> void:
 		_list.draw_style_box(_make_stylebox(Color(acc.r, acc.g, acc.b, 0.16), Color(acc.r, acc.g, acc.b, 0.9), 3, 1), mr)
 
 
-## Dossier de l'arbre visé pendant un glisser-déposer : cadre accent arrondi.
+## Tree folder targeted during a drag and drop: rounded accent frame.
 func _draw_tree_drop() -> void:
 	if _drop_tree_item == null or not is_instance_valid(_drop_tree_item):
 		return
@@ -1986,7 +1986,7 @@ func _current_zoom() -> float:
 	return _zoom_list if _view_list else _zoom_grid
 
 
-# Adapte la plage du curseur au mode courant et y remet le zoom mémorisé de CE mode
+# Adapts the slider range to the current mode and restores the remembered zoom of THIS mode
 func _configure_zoom() -> void:
 	if _zoom == null:
 		return
@@ -2022,8 +2022,8 @@ func _apply_list_layout() -> void:
 		_list.fixed_column_width = s + 28
 
 
-## Appelé quand l'utilisateur relâche le séparateur entre la liste et le panneau de détails.
-## `offset` est déjà borné par le SplitContainer (respecte les minimums des deux côtés).
+## Called when the user releases the separator between the list and the details panel.
+## `offset` is already clamped by the SplitContainer (respects the minimums of both sides).
 func _on_details_split_dragged(offset: int) -> void:
 	_details_width = maxf(DETAILS_MIN_WIDTH - float(offset), DETAILS_MIN_WIDTH)
 	_save_cfg()
@@ -2038,8 +2038,8 @@ func _on_zoom_changed(v: float) -> void:
 	if not is_open:
 		_dirty = true
 		return
-	# Le zoom n'agit que sur la mise en page ; on ne reconstruit la liste que si la
-	# taille d'icône générée change de palier.
+	# Zoom only affects the layout; the list is rebuilt only if the
+	# generated icon size changes tier.
 	_apply_list_layout()
 	if _bucket(int(v)) != _icon_bucket:
 		_refresh()
@@ -2047,7 +2047,7 @@ func _on_zoom_changed(v: float) -> void:
 		_schedule_previews()
 
 
-# Curseur de zoom lisible sur fond sombre : piste claire, partie remplie en accent, poignée ronde
+# Zoom slider readable on a dark background: light track, filled part in accent, round handle
 func _style_zoom_slider(accent: Color) -> void:
 	var track := StyleBoxFlat.new()
 	track.bg_color = COLOR_TRACK
@@ -2077,7 +2077,7 @@ func _make_dot(d: int, col: Color) -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
-# ---------- Miniatures paresseuses ----------
+# ---------- Lazy thumbnails ----------
 
 func _schedule_previews() -> void:
 	if _preview_timer != null and is_open:
@@ -2085,7 +2085,7 @@ func _schedule_previews() -> void:
 
 
 func _request_visible_previews() -> void:
-	# Ne demande que les miniatures des éléments visibles (+ une page de marge de chaque côté)
+	# Only requests thumbnails of visible items (+ one page of margin on each side)
 	if not is_open or _list == null or _list.item_count == 0:
 		return
 	if _list.has_method("force_update_list_size"):
@@ -2104,8 +2104,8 @@ func _request_visible_previews() -> void:
 		if _dir_paths.has(path) or _preview_pending.has(path):
 			continue
 		if path.get_extension().to_lower() == "svg" and not _svg_fail.has(path):
-			# La miniature de Godot est petite (≈ 64 px) puis agrandie : floue. On rastérise le
-			# SVG à la taille d'affichage, par petits paquets pour ne pas saccader l'interface.
+			# Godot's thumbnail is small (≈ 64 px) then enlarged: blurry. We rasterize the
+			# SVG at display size, in small batches so the interface doesn't stutter.
 			var target := _svg_target()
 			if _preview_cache.has(path) and int(_svg_px.get(path, 0)) >= target:
 				continue
@@ -2118,7 +2118,7 @@ func _request_visible_previews() -> void:
 		previewer.queue_resource_preview(path, self, "_on_preview", path)
 
 
-## Tous les mots de la recherche doivent apparaître dans le nom (déjà en minuscules).
+## All the search words must appear in the name (already lowercase).
 func _name_matches(name_lc: String, tokens: PackedStringArray) -> bool:
 	for t in tokens:
 		if not name_lc.contains(t):
@@ -2126,9 +2126,9 @@ func _name_matches(name_lc: String, tokens: PackedStringArray) -> bool:
 	return true
 
 
-## Index à plat (chemin, type, dossier?, nom, nom en minuscules) de tout le projet.
-## Reconstruit seulement quand le système de fichiers change : une recherche ne parcourt
-## plus l'arborescence de l'éditeur, juste ce tableau.
+## Flat index (path, type, folder?, name, lowercase name) of the whole project.
+## Rebuilt only when the file system changes: a search no longer walks
+## the editor's tree, just this array.
 func _build_index() -> void:
 	_index.clear()
 	var fs := EditorInterface.get_resource_filesystem().get_filesystem()
@@ -2148,8 +2148,8 @@ func _index_dir(dir: EditorFileSystemDirectory) -> void:
 		_index.append([dir.get_file_path(i), dir.get_file_type(i), false, fname, fname.to_lower()])
 
 
-## Recherche dans tout le projet (ou sous le dossier courant). Résultats classés :
-## nom exact, puis nom qui commence par le 1er mot, puis nom qui le contient.
+## Search across the whole project (or under the current folder). Results ranked:
+## exact name, then name starting with the 1st word, then name containing it.
 func _search_entries(tokens: PackedStringArray, out: Array) -> void:
 	if tokens.is_empty():
 		return
@@ -2197,9 +2197,9 @@ func _update_search_ui() -> void:
 		_btn_scope.tooltip_text = L.t("Recherche : tout le projet (cliquer pour limiter au dossier courant)") if _search_all else L.t("Recherche : dossier courant (cliquer pour chercher dans tout le projet)")
 
 
-# ---------- Éléments masqués ----------
+# ---------- Hidden items ----------
 
-## Clé stockée : un dossier se termine par "/", un fichier garde son chemin exact.
+## Stored key: a folder ends with "/", a file keeps its exact path.
 func _hidden_key(path: String) -> String:
 	if DirAccess.dir_exists_absolute(path):
 		return path.trim_suffix("/") + "/"
@@ -2408,7 +2408,7 @@ func _refresh_breadcrumbs() -> void:
 		_breadcrumbs.remove_child(c)
 		c.queue_free()
 	var bold := EditorInterface.get_base_control().get_theme_font("bold", "EditorFonts")
-	var parts: Array = []   # [texte, chemin ou ""]
+	var parts: Array = []   # [text, path or ""]
 	if not _active_set.is_empty():
 		parts.append(["Sets", ""])
 		parts.append([_active_set, ""])
@@ -2433,7 +2433,7 @@ func _refresh_breadcrumbs() -> void:
 		if target != "":
 			btn.pressed.connect(func() -> void: _navigate(target))
 		else:
-			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE   # segment non cliquable : pas de survol
+			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE   # non-clickable segment: no hover
 		_breadcrumbs.add_child(btn)
 		if i < parts.size() - 1:
 			var sep := Label.new()
@@ -2466,7 +2466,7 @@ func _refresh_tree() -> void:
 
 
 func _sync_tree_selection() -> void:
-	# Sélectionne le dossier courant sans reconstruire l'arbre
+	# Selects the current folder without rebuilding the tree
 	if _tree == null or not _active_set.is_empty():
 		return
 	var target: TreeItem = _tree_items.get(current_dir.trim_suffix("/"), null)
@@ -2499,7 +2499,7 @@ func _fill_tree(parent: TreeItem, dir: EditorFileSystemDirectory, colors: Dictio
 		item.set_icon_modulate(0, tint)
 		_tree_items[sub.get_path().trim_suffix("/")] = item
 		_fill_tree(item, sub, colors, icon)
-		# Replié par défaut (gros projets) ; le dossier courant est déplié à la sélection
+		# Collapsed by default (large projects); the current folder is expanded on selection
 		item.collapsed = bool(_collapsed.get(sub.get_path(), true))
 
 
@@ -2525,7 +2525,7 @@ func _on_tree_selected() -> void:
 		_navigate.call_deferred(p)
 
 
-# ---------- Arbre : éléments épinglés (sticky), clic simple, outils ----------
+# ---------- Tree: pinned (sticky) items, single click, tools ----------
 
 func _add_tree_tool_button(icon_name: String, fallback: String, tip: String, cb: Callable) -> void:
 	var b := Button.new()
@@ -2542,13 +2542,13 @@ func _add_tree_tool_button(icon_name: String, fallback: String, tip: String, cb:
 
 
 func _setup_sticky() -> void:
-	# Calque posé sur l'arbre : affiche les dossiers parents "collés" en haut.
-	# Implémentation maison (fonctionne dès Godot 4.2, sans dépendre du Tree sticky de 4.8).
+	# Overlay placed on the tree: shows the parent folders "stuck" at the top.
+	# Home-made implementation (works from Godot 4.2, without relying on 4.8's sticky Tree).
 	_sticky_box = Control.new()
 	_sticky_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Filet de sécurité : quoi qu'il arrive (signature en retard, mesure de ligne bancale au
-	# premier affichage, etc.), le calque ne doit JAMAIS pouvoir dessiner en dehors du rectangle
-	# de l'arbre — ni au-dessus, ni en dessous.
+	# Safety net: whatever happens (late signature, shaky row measurement on the
+	# first display, etc.), the overlay must NEVER be able to draw outside the tree's
+	# rectangle — neither above nor below.
 	_sticky_box.clip_contents = true
 	_sticky_box.visible = false
 	_tree.clip_contents = true
@@ -2565,14 +2565,14 @@ func _process(_delta: float) -> void:
 	_update_paste_pop_hover()
 	_update_copy_pop_hover()
 	_pump_svg_queue()
-	# Garde-fou : la pastille "Ctrl+Espace" doit toujours être invisible pendant que le tiroir
-	# est ouvert. Réaffirmé à chaque frame plutôt que de compter uniquement sur open()/close(),
-	# au cas où un chemin annexe (rechargement du thème, appel différé...) l'aurait manqué.
+	# Safeguard: the "Ctrl+Space" pill must always be invisible while the drawer
+	# is open. Reasserted every frame rather than relying only on open()/close(),
+	# in case a side path (theme reload, deferred call...) missed it.
 	if SHOW_HINT and is_instance_valid(_hint) and _hint.visible == is_open:
 		_hint.visible = not is_open
 
 
-# Hauteur d'une ligne de l'arbre, mesurée en cherchant deux changements de ligne consécutifs.
+# Height of a tree row, measured by finding two consecutive row changes.
 func _get_row_pitch() -> float:
 	if _row_pitch > 0.0:
 		return _row_pitch
@@ -2614,7 +2614,7 @@ func _row_index(target: TreeItem) -> int:
 	return -1
 
 
-# Liste (racine -> profond) des dossiers à coller en haut de l'arbre.
+# List (root -> deep) of the folders to pin at the top of the tree.
 func _compute_sticky_chain() -> Array:
 	var chain: Array = []
 	if _tree.get_root() == null or _tree.get_scroll().y < 1.0:
@@ -2622,10 +2622,10 @@ func _compute_sticky_chain() -> Array:
 	var pitch := _get_row_pitch()
 	if pitch <= 0.0:
 		return chain
-	var slot := _sticky_row_h(pitch)  # = pitch : on sonde à des multiples de ligne ENTIÈRE
+	var slot := _sticky_row_h(pitch)  # = pitch: we probe at multiples of a WHOLE row
 	var k := 0
 	for _i in range(STICKY_MAX + 1):
-		# Ligne située juste sous les lignes déjà collées
+		# Row located just below the rows already pinned
 		var probe: TreeItem = _tree.get_item_at_position(Vector2(4.0, k * slot + 1.0))
 		if probe == null:
 			break
@@ -2653,11 +2653,11 @@ func _update_sticky() -> void:
 			_pending_reveal = null
 			if is_instance_valid(pr):
 				_reveal_tree_item(pr)
-	# Masquage immédiat et prioritaire : dès que l'arbre est tout en haut, aucun dossier parent
-	# à afficher. On ne dépend jamais du cache de signature pour ce cas précis, afin d'éviter
-	# qu'un résidu du calque reste visible un instant au-dessus de "res://". (Le traitement de
-	# _pending_reveal ci-dessus doit rester AVANT ce test : c'est lui qui peut faire bouger le
-	# scroll et donc changer ce résultat au prochain appel.)
+	# Immediate, priority hiding: as soon as the tree is at the very top, there is no parent folder
+	# to show. We never depend on the signature cache for this specific case, to avoid
+	# a leftover of the overlay staying visible for a moment above "res://". (The handling of
+	# _pending_reveal above must stay BEFORE this test: it is what can move the
+	# scroll and therefore change this result on the next call.)
 	if _tree.get_scroll().y < 1.0:
 		if _sticky_box.visible:
 			_sticky_box.visible = false
@@ -2676,10 +2676,10 @@ func _update_sticky() -> void:
 	_rebuild_sticky(chain, w, pitch)
 
 
-## Hauteur RÉSERVÉE par ligne collée : toujours une ligne entière de l'arbre.
-## Ne jamais réduire cette valeur : c'est elle qui garantit que le calque des
-## dossiers épinglés couvre exactement un nombre entier de lignes réelles,
-## sans quoi une ligne réelle apparaît à moitié sous le calque (chevauchement).
+## RESERVED height per pinned row: always one whole tree row.
+## Never reduce this value: it is what guarantees that the pinned-folders overlay
+## covers exactly a whole number of real rows,
+## otherwise a real row appears half under the overlay (overlap).
 func _sticky_row_h(pitch: float) -> float:
 	return pitch
 
@@ -2693,10 +2693,10 @@ func _rebuild_sticky(chain: Array, w: float, pitch: float) -> void:
 		return
 	var accent: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
 	var margin := maxi(_tree.get_theme_constant("item_margin"), 8)
-	var slot := _sticky_row_h(pitch)  # = pitch : une ligne réservée = une ligne entière de l'arbre
-	# Placement explicite, une ligne ENTIÈRE après l'autre : le calque couvre alors exactement
-	# le même nombre de pixels que les lignes réelles qu'il masque, aucune ligne ne peut
-	# se retrouver à moitié visible sous le calque (chevauchement).
+	var slot := _sticky_row_h(pitch)  # = pitch: one reserved row = one whole tree row
+	# Explicit placement, one WHOLE row after the other: the overlay then covers exactly
+	# the same number of pixels as the real rows it hides, no row can
+	# end up half visible under the overlay (overlap).
 	var y := 0.0
 	for it in chain:
 		var r := _make_sticky_row(it, pitch, margin, accent)
@@ -2726,32 +2726,32 @@ func _sticky_row_style(bg: Color) -> StyleBoxFlat:
 func _make_sticky_row(it: TreeItem, pitch: float, margin: int, accent: Color) -> Control:
 	var path := str(it.get_metadata(0))
 	var depth := _item_depth(it)
-	var slot := _sticky_row_h(pitch)  # hauteur RÉSERVÉE = une ligne entière (alignement)
+	var slot := _sticky_row_h(pitch)  # RESERVED height = one whole row (alignment)
 	var is_cur := path.trim_suffix("/") == current_dir.trim_suffix("/")
 	var bg := _hover_c(COLOR_LEFT_PANEL)
 	if is_cur:
 		bg = bg.lerp(accent, 0.30)
-	bg.a = 1.0  # toujours opaque : cette ligne doit intégralement masquer l'arbre réel derrière
+	bg.a = 1.0  # always opaque: this row must fully hide the real tree behind it
 	var hover_bg := _hover_c(bg)
 	hover_bg.a = 1.0
 	var sb_normal := _sticky_row_style(bg)
 	var sb_hover := _sticky_row_style(hover_bg)
 
-	# PanelContainer : son style "panel" peint SEUL tout le rectangle (toute la hauteur
-	# réservée, sans le moindre trou transparent), et il centre automatiquement son
-	# contenu — plus de calcul d'ancrage à la main, donc plus de décalage possible.
+	# PanelContainer: its "panel" style paints the whole rectangle ALONE (the full
+	# reserved height, without the slightest transparent gap), and it automatically centers its
+	# content — no more manual anchoring math, so no possible offset.
 	var row := PanelContainer.new()
 	row.custom_minimum_size = Vector2(0, slot)
 	row.clip_contents = true
-	row.mouse_filter = Control.MOUSE_FILTER_PASS   # la molette continue vers l'arbre
+	row.mouse_filter = Control.MOUSE_FILTER_PASS   # the mouse wheel keeps going to the tree
 	row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	row.tooltip_text = path
 	row.add_theme_stylebox_override("panel", sb_normal)
 	row.mouse_entered.connect(func() -> void: row.add_theme_stylebox_override("panel", sb_hover))
 	row.mouse_exited.connect(func() -> void: row.add_theme_stylebox_override("panel", sb_normal))
 
-	# Marges internes : décalent le contenu sans jamais laisser paraître le fond derrière
-	# (elles restent À L'INTÉRIEUR du panneau opaque ci-dessus).
+	# Inner margins: shift the content without ever letting the background show through
+	# (they stay INSIDE the opaque panel above).
 	var pad := MarginContainer.new()
 	pad.add_theme_constant_override("margin_left", depth * margin + 4)
 	pad.add_theme_constant_override("margin_right", 6)
@@ -2791,9 +2791,9 @@ func _make_sticky_row(it: TreeItem, pitch: float, margin: int, accent: Color) ->
 	lbl.clip_text = true
 	lbl.add_theme_font_size_override("font_size", 12)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	# Centrage EXPLICITE : le Label reçoit toute la hauteur de la ligne (SIZE_FILL) et centre
-	# lui-même son texte dedans (vertical_alignment), plutôt que de dépendre du "minimum size"
-	# calculé par Godot (peu fiable selon la police/le DPI).
+	# EXPLICIT centering: the Label receives the whole row height (SIZE_FILL) and centers
+	# its text inside it (vertical_alignment), rather than depending on the "minimum size"
+	# computed by Godot (unreliable depending on font/DPI).
 	lbl.size_flags_vertical = Control.SIZE_FILL
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2824,7 +2824,7 @@ func _sticky_item(path: String) -> TreeItem:
 	return null
 
 
-# Clic sur un dossier collé : ouvre le dossier et le ramène juste sous ses parents collés
+# Click on a pinned folder: opens the folder and brings it just under its pinned parents
 func _on_sticky_clicked(path: String) -> void:
 	if path.trim_suffix("/") != current_dir.trim_suffix("/"):
 		_navigate.call_deferred(path)
@@ -2833,7 +2833,7 @@ func _on_sticky_clicked(path: String) -> void:
 		_reveal_tree_item.call_deferred(it)
 
 
-# Clic sur la flèche d'un dossier collé : le replie
+# Click on the arrow of a pinned folder: collapses it
 func _on_sticky_arrow(path: String) -> void:
 	var it := _sticky_item(path)
 	if it == null:
@@ -2842,7 +2842,7 @@ func _on_sticky_arrow(path: String) -> void:
 	_reveal_tree_item.call_deferred(it)
 
 
-# Rend l'élément visible en tenant compte des lignes collées qui le recouvriraient
+# Makes the item visible, taking into account the pinned rows that would cover it
 func _reveal_tree_item(item: TreeItem) -> void:
 	if item == null or not is_instance_valid(item) or _tree == null:
 		return
@@ -2851,7 +2851,7 @@ func _reveal_tree_item(item: TreeItem) -> void:
 		return
 	var pitch := _get_row_pitch()
 	if pitch <= 0.0:
-		_pending_reveal = item      # arbre pas encore mesurable : on réessaie plus tard
+		_pending_reveal = item      # tree not measurable yet: we try again later
 		return
 	var idx := _row_index(item)
 	if idx < 0:
@@ -2862,7 +2862,7 @@ func _reveal_tree_item(item: TreeItem) -> void:
 		_tree_vscroll.value = maxf(0.0, _tree_vscroll.value - (need - y_top))
 
 
-# Clic simple sur un dossier de l'arbre : navigation (via la sélection) + dépliage
+# Single click on a tree folder: navigation (through the selection) + expansion
 func _on_tree_gui_input(ev: InputEvent) -> void:
 	if not (ev is InputEventMouseButton):
 		return
@@ -2879,24 +2879,24 @@ func _on_tree_gui_input(ev: InputEvent) -> void:
 
 func _after_tree_click(item: TreeItem, was_collapsed: bool, was_current: bool) -> void:
 	if not is_instance_valid(item) or item.collapsed != was_collapsed:
-		return      # clic sur la flèche : déjà géré par Godot
+		return      # click on the arrow: already handled by Godot
 	var path := str(item.get_metadata(0))
 	if item.get_first_child() != null:
 		if was_current:
-			item.collapsed = not was_collapsed     # re-clic sur le dossier courant : bascule
+			item.collapsed = not was_collapsed     # re-click on the current folder: toggle
 		elif was_collapsed:
-			item.collapsed = false                 # nouveau dossier : on le déplie
+			item.collapsed = false                 # new folder: we expand it
 	_center_tree_item_soon(path)
 
 
-# Attend que l'arbre ait fini sa mise en page (dépliage, sélection) puis centre le dossier cliqué
+# Waits for the tree to finish its layout (expansion, selection) then centers the clicked folder
 func _center_tree_item_soon(path: String) -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_center_tree_item(_sticky_item(path))
 
 
-# Fait défiler l'arbre (en douceur) pour que l'élément soit au milieu de la zone visible
+# Scrolls the tree (smoothly) so that the item is in the middle of the visible area
 func _center_tree_item(item: TreeItem) -> void:
 	if item == null or not is_instance_valid(item) or _tree_vscroll == null:
 		return
@@ -2908,14 +2908,14 @@ func _center_tree_item(item: TreeItem) -> void:
 	var idx := _row_index(item)
 	if idx < 0:
 		return
-	# Espace réservé pour les dossiers parents épinglés de CET élément (même règle que le calque
-	# sticky : toujours un nombre entier de lignes). Si on l'ignore ici, le défilement peut amener
-	# l'élément juste sous le calque avec un décalage d'une fraction de ligne, ce qui fait
-	# apparaître une ligne réelle à moitié visible SOUS le calque (le bug de chevauchement).
+	# Space reserved for the pinned parent folders of THIS item (same rule as the
+	# sticky overlay: always a whole number of rows). If we ignore it here, scrolling can bring
+	# the item just under the overlay with a fraction-of-a-row offset, which makes
+	# a real row appear half visible UNDER the overlay (the overlap bug).
 	var reserved := mini(_item_depth(item), STICKY_MAX) * _sticky_row_h(pitch)
 	var available := maxf(_tree.size.y - reserved, pitch)
-	# Nombre de lignes de contexte à laisser visibles au-dessus de l'élément, dans la moitié de
-	# l'espace disponible sous le calque — toujours un nombre ENTIER de lignes pour rester aligné.
+	# Number of context rows to leave visible above the item, in half of the
+	# space available under the overlay — always a WHOLE number of rows to stay aligned.
 	var context_rows := mini(idx, floori((available * 0.5) / pitch))
 	var target := (idx - context_rows) * pitch - reserved
 	var max_v := maxf(0.0, _tree_vscroll.max_value - _tree_vscroll.page)
@@ -2949,8 +2949,8 @@ func _set_preview_tex(tex: Texture2D) -> void:
 		sh.texture = tex
 
 
-## Taille (px) à laquelle rastériser les SVG, selon le zoom et l'échelle de l'éditeur
-## (≈ 2× la taille affichée : l'ItemList réduit ensuite sans crénelage).
+## Size (px) at which to rasterize SVGs, depending on zoom and editor scale
+## (≈ 2× the displayed size: the ItemList then downscales without aliasing).
 func _svg_target() -> int:
 	var base_px := 128
 	match _icon_bucket:
@@ -2977,7 +2977,7 @@ func _pump_svg_queue() -> void:
 		else:
 			_svg_fail[path] = true
 			_preview_pending.erase(path)
-			_schedule_previews()   # retombe sur la miniature de Godot
+			_schedule_previews()   # falls back to Godot's thumbnail
 
 
 func _render_svg(path: String, target: int) -> Texture2D:
@@ -2989,7 +2989,7 @@ func _render_svg(path: String, target: int) -> Texture2D:
 		return null
 	var longest := maxi(img.get_width(), img.get_height())
 	if absf(float(longest) - float(target)) > 2.0:
-		# Rendu direct à la bonne échelle (vectoriel : pas de perte, contrairement à un agrandissement)
+		# Direct rendering at the right scale (vector: no loss, unlike an enlargement)
 		var img2 := Image.new()
 		if img2.load_svg_from_string(text, float(target) / float(longest)) == OK and img2.get_width() > 0:
 			img = img2
@@ -2999,10 +2999,10 @@ func _render_svg(path: String, target: int) -> Texture2D:
 func _on_preview(path: String, preview: Texture2D, _thumb: Texture2D, _user) -> void:
 	_preview_pending.erase(path)
 	if str(_user) != "svg" and _svg_px.has(path) and _preview_cache.get(path, null) != null:
-		return   # on garde notre rastérisation, plus nette
+		return   # we keep our own rasterization, which is sharper
 	if _preview_cache.size() > 4000:
 		_preview_cache.clear()
-	_preview_cache[path] = preview    # null = échec, évite de redemander en boucle
+	_preview_cache[path] = preview    # null = failure, avoids asking again in a loop
 	if preview == null or _list == null:
 		return
 	if _path_index.has(path):
@@ -3013,14 +3013,14 @@ func _on_preview(path: String, preview: Texture2D, _thumb: Texture2D, _user) -> 
 		_set_preview_tex(preview)
 
 
-# ---------- Ouverture / fermeture animées ----------
+# ---------- Animated opening / closing ----------
 
 func toggle() -> void:
 	if is_open:
 		close()
 	elif Time.get_ticks_msec() - _outside_close_msec > 250:
-		# Évite de rouvrir aussitôt quand le clic qui vient de fermer le tiroir
-		# (clic extérieur) tombe sur le bouton de la barre d'outils.
+		# Avoids reopening right away when the click that just closed the drawer
+		# (outside click) lands on the toolbar button.
 		open()
 
 
@@ -3077,13 +3077,13 @@ func _on_editor_resized() -> void:
 		_layout(EditorInterface.get_base_control())
 
 
-# ---------- Pastille d'aide (raccourci) ----------
+# ---------- Hint pill (shortcut) ----------
 
 func _build_hint(base: Control) -> void:
 	var accent: Color = base.get_theme_color("accent_color", "Editor")
 	_hint = PanelContainer.new()
 	_hint.name = "AssetDrawerHint"
-	_hint.z_index = 200  # au-dessus du panneau du tiroir lui-même (z_index = 128)
+	_hint.z_index = 200  # above the drawer panel itself (z_index = 128)
 	_hint.z_as_relative = false
 	_hint.modulate.a = 0.65
 	_hint.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
@@ -3124,8 +3124,8 @@ func _build_hint(base: Control) -> void:
 	_breathe_hint(hint_style, accent)
 
 
-## Respiration lente et discrète du contour de la pastille d'aide, en boucle,
-## pour signaler doucement qu'elle est cliquable sans être criarde.
+## Slow, discreet breathing of the hint pill's outline, looping,
+## to gently signal that it is clickable without being loud.
 func _breathe_hint(style: StyleBoxFlat, accent: Color) -> void:
 	if _hint_tween and _hint_tween.is_valid():
 		_hint_tween.kill()
@@ -3158,7 +3158,7 @@ func _set_hint_visible(on: bool) -> void:
 			_layout_hint()
 
 
-## Ouverture avec un léger rebond ("overshoot") : plus vivant qu'un simple glissement linéaire.
+## Opening with a slight bounce ("overshoot"): livelier than a plain linear slide.
 func _animate_open(base: Control) -> void:
 	if _tween:
 		_tween.kill()
@@ -3174,7 +3174,7 @@ func _animate_open(base: Control) -> void:
 	_tween.chain().tween_callback(_pulse_glow)
 
 
-## Fermeture plus courte et nette, avec un léger repli pour accompagner la sortie.
+## Shorter, crisper closing, with a slight fold-back to accompany the exit.
 func _animate_close(base: Control) -> void:
 	if _tween:
 		_tween.kill()
@@ -3187,7 +3187,7 @@ func _animate_close(base: Control) -> void:
 	_tween.tween_property(self, "modulate:a", 0.0, dur * 0.85)
 
 
-## Pulsation du contour/ombre accent juste après l'ouverture : un "pop" lumineux discret.
+## Pulse of the accent outline/shadow right after opening: a discreet luminous "pop".
 func _pulse_glow() -> void:
 	if _panel_style == null or not is_open:
 		return
@@ -3262,7 +3262,7 @@ func _on_item_activated(index: int) -> void:
 
 
 const MODEL_EXTS := ["glb", "gltf", "fbx", "blend", "dae", "obj"]
-const MODEL_SCENE_EXTS := ["glb", "gltf", "fbx", "blend", "dae"]   # importés comme scènes (obj = Mesh)
+const MODEL_SCENE_EXTS := ["glb", "gltf", "fbx", "blend", "dae"]   # imported as scenes (obj = Mesh)
 
 
 func _is_model(path: String) -> bool:
@@ -3273,7 +3273,7 @@ func _is_model_scene(path: String) -> bool:
 	return path.get_extension().to_lower() in MODEL_SCENE_EXTS
 
 
-## Sélectionne le fichier (le dock Import se met à jour) puis met l'onglet Import au premier plan.
+## Selects the file (the Import dock updates) then brings the Import tab to the front.
 func _show_import_settings(path: String) -> void:
 	EditorInterface.select_file(path)
 	get_tree().create_timer(0.08).timeout.connect(_focus_import_dock)
@@ -3307,11 +3307,11 @@ func _find_node_by_class(n: Node, cls: String) -> Node:
 	return null
 
 
-## Ouvre la fenêtre « Import avancé » de Godot : sélectionne le fichier, attend que le dock Import
-## affiche ce fichier, puis déclenche son bouton « Avancé... ».
+## Opens Godot's "Advanced Import" window: selects the file, waits for the Import dock
+## to show that file, then triggers its "Advanced..." button.
 func _open_advanced_import(path: String) -> void:
 	if not _is_model_scene(path):
-		_show_import_settings(path)   # ex. .obj : pas d'import avancé, on affiche le dock Import
+		_show_import_settings(path)   # e.g. .obj: no advanced import, we show the Import dock
 		return
 	EditorInterface.select_file(path)
 	if not pinned:
@@ -3321,11 +3321,11 @@ func _open_advanced_import(path: String) -> void:
 
 func _try_advanced_import(path: String, attempt: int) -> void:
 	await get_tree().create_timer(0.15).timeout
-	# 1) Méthode principale : reproduire exactement le double-clic du dock Fichiers, qui appelle
-	#    lui-même l'import avancé de Godot pour les modèles 3D.
+	# 1) Main method: reproduce exactly the double-click in the FileSystem dock, which itself
+	#    calls Godot's advanced import for 3D models.
 	if _activate_in_filesystem_dock(path):
 		return
-	# 2) Secours : le bouton « Avancé... » du dock Import.
+	# 2) Fallback: the "Advanced..." button of the Import dock.
 	var dock := _find_node_by_class(EditorInterface.get_base_control(), "ImportDock")
 	if dock != null and _import_dock_shows(dock, path):
 		var btn := _find_advanced_button(dock)
@@ -3339,7 +3339,7 @@ func _try_advanced_import(path: String, attempt: int) -> void:
 		_flash(L.t("Import avancé indisponible pour ce fichier"), true)
 
 
-## Simule un double-clic sur le fichier dans le dock Fichiers (liste de fichiers ou arbre).
+## Simulates a double-click on the file in the FileSystem dock (file list or tree).
 func _activate_in_filesystem_dock(path: String) -> bool:
 	var fsd: Node = EditorInterface.get_file_system_dock()
 	if fsd == null:
@@ -3398,7 +3398,7 @@ func _find_advanced_button(root: Node) -> Button:
 		var t := b.text.strip_edges()
 		if b.visible and not b.disabled and (t.begins_with("Advanced") or t.begins_with("Avanc")):
 			return b
-	# Langue inconnue : le bouton « Avancé... » est le seul bouton simple dont le texte finit par « ... »
+	# Unknown language: the "Advanced..." button is the only plain button whose text ends with "..."
 	for b in buttons:
 		var t := b.text.strip_edges()
 		if b.visible and not b.disabled and b.get_class() == "Button" and (t.ends_with("...") or t.ends_with("…")):
@@ -3413,7 +3413,7 @@ func _collect_buttons(n: Node, out: Array[Button]) -> void:
 		_collect_buttons(c, out)
 
 
-## Ouvre le modèle comme scène : Godot propose alors de créer une nouvelle scène héritée.
+## Opens the model as a scene: Godot then offers to create a new inherited scene.
 func _new_inherited_scene(path: String) -> void:
 	EditorInterface.open_scene_from_path(path)
 	if not pinned:
@@ -3431,15 +3431,15 @@ func _open_path(path: String) -> void:
 	if ext in ["tscn", "scn"]:
 		EditorInterface.open_scene_from_path(path)
 	elif _is_model(path):
-		# Ouvre la fenêtre « Import avancé » du modèle (la création d'une scène héritée
-		# est dans le menu clic droit).
+		# Opens the model's "Advanced Import" window (creating an inherited scene
+		# is in the right-click menu).
 		_open_advanced_import(path)
 	elif ResourceLoader.exists(path):
 		var res := load(path)
 		if res is Script:
 			EditorInterface.edit_script(res)
 		elif res is PackedScene:
-			EditorInterface.open_scene_from_path(path)   # .glb / .gltf / .fbx importés comme scènes
+			EditorInterface.open_scene_from_path(path)   # .glb / .gltf / .fbx imported as scenes
 		else:
 			EditorInterface.edit_resource(res)
 	else:
@@ -3449,7 +3449,7 @@ func _open_path(path: String) -> void:
 		close()
 
 
-# ---------- Clavier & souris ----------
+# ---------- Keyboard & mouse ----------
 
 func _input(event: InputEvent) -> void:
 	if _ctx_popup != null and _ctx_popup.visible:
@@ -3462,7 +3462,7 @@ func _input(event: InputEvent) -> void:
 			_ctx_popup.hide()
 			get_viewport().set_input_as_handled()
 			return
-	# Boutons latéraux de la souris : précédent / suivant (seulement au-dessus du tiroir)
+	# Mouse side buttons: back / forward (only over the drawer)
 	if is_open and event is InputEventMouseButton and event.pressed:
 		var xb := event as InputEventMouseButton
 		if xb.button_index == MOUSE_BUTTON_XBUTTON1 or xb.button_index == MOUSE_BUTTON_XBUTTON2:
@@ -3470,8 +3470,8 @@ func _input(event: InputEvent) -> void:
 				_hist_go(-1 if xb.button_index == MOUSE_BUTTON_XBUTTON1 else 1)
 				get_viewport().set_input_as_handled()
 			return
-	# Clic en dehors du tiroir -> fermeture (comme le Content Drawer d'Unreal), sauf si épinglé.
-	# L'évènement n'est pas consommé : le clic garde son effet sur ce qui a été cliqué.
+	# Click outside the drawer -> closes it (like Unreal's Content Drawer), unless pinned.
+	# The event is not consumed: the click keeps its effect on whatever was clicked.
 	if is_open and not pinned and event is InputEventMouseButton and event.pressed:
 		var mb := event as InputEventMouseButton
 		var is_wheel := mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT, MOUSE_BUTTON_XBUTTON1, MOUSE_BUTTON_XBUTTON2]
@@ -3492,7 +3492,7 @@ func _input(event: InputEvent) -> void:
 		return
 	if focus is LineEdit or focus is TextEdit:
 		return
-	# Actions sur les éléments : seulement si la liste a le focus (pas l'arbre ni un bouton)
+	# Actions on items: only if the list has focus (not the tree nor a button)
 	if focus != null and focus != _list and k.keycode != KEY_BACKSPACE:
 		return
 	var sel := _selected_paths()
@@ -3521,7 +3521,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _on_list_gui_input(event: InputEvent) -> void:
-	# --- Sélection par rectangle (clic gauche maintenu dans une zone vide) ---
+	# --- Rectangle selection (left click held in an empty area) ---
 	if event is InputEventMouseMotion and _mq_active:
 		var mm := event as InputEventMouseMotion
 		_marquee_update(mm.position, mm.button_mask)
@@ -3575,7 +3575,7 @@ func _marquee_update(pos: Vector2, mask: int) -> void:
 		if Vector2(_mq_start.x, _mq_start.y - vs.value).distance_to(pos) < 4.0:
 			return
 		_mq_moved = true
-	# Défilement automatique près des bords haut / bas
+	# Auto-scroll near the top / bottom edges
 	if pos.y < 14.0:
 		vs.value -= 18.0
 	elif pos.y > _list.size.y - 14.0:
@@ -3616,7 +3616,7 @@ func _get_drag_data_fw(_at: Vector2) -> Variant:
 	var first: String = files[0]
 	var is_dir := DirAccess.dir_exists_absolute(first)
 
-	# Petite carte flottante (icône + nom, légèrement inclinée) plutôt qu'un Label brut.
+	# Small floating card (icon + name, slightly tilted) rather than a bare Label.
 	var wrap := Control.new()
 	var card := PanelContainer.new()
 	card.rotation = deg_to_rad(-3.0)
@@ -3643,14 +3643,14 @@ func _get_drag_data_fw(_at: Vector2) -> Variant:
 	return {"type": "files", "files": files}
 
 
-# ---------- Glisser-déposer : déplacer des fichiers / dossiers dans un dossier ----------
+# ---------- Drag and drop: move files / folders into a folder ----------
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_DRAG_END:
 		_clear_drop_hl()
 
 
-# Chemins contenus dans un glisser (tiroir ou dock Fichiers de Godot), sans « / » final
+# Paths contained in a drag (drawer or Godot's FileSystem dock), without trailing "/"
 func _drag_paths(data: Variant) -> PackedStringArray:
 	var out := PackedStringArray()
 	if data is Dictionary:
@@ -3677,7 +3677,7 @@ func _can_move_one(src: String, dst_dir: String) -> bool:
 	if src.get_base_dir() == dst_dir or src == dst_dir:
 		return false
 	if _is_under(dst_dir, src):
-		return false      # un dossier ne peut pas entrer dans lui-même / un de ses sous-dossiers
+		return false      # a folder cannot go into itself / one of its subfolders
 	return FileAccess.file_exists(src) or DirAccess.dir_exists_absolute(src)
 
 
@@ -3716,15 +3716,15 @@ func _clear_drop_hl() -> void:
 	_set_drop_hl_tree(null)
 
 
-# Cible d'un dépôt dans la liste : dossier survolé, sinon le dossier courant (zone vide)
+# Target of a drop in the list: hovered folder, otherwise the current folder (empty area)
 func _list_drop_target(at: Vector2) -> Dictionary:
 	var idx := _list.get_item_at_position(at, true)
 	if idx >= 0:
 		var p := str(_list.get_item_metadata(idx))
 		if _dir_paths.has(p):
 			return {"dir": _norm_dir(p), "idx": idx}
-	# Zone vide (ou fichier) : on dépose dans le dossier courant, sauf en recherche / ensemble,
-	# où la liste mélange plusieurs dossiers.
+	# Empty area (or file): we drop into the current folder, except in search / set,
+	# where the list mixes several folders.
 	if not _active_set.is_empty() or not _search.text.strip_edges().is_empty():
 		return {"dir": "", "idx": -1}
 	return {"dir": _norm_dir(current_dir), "idx": -1}
@@ -3778,7 +3778,7 @@ func _tree_drop(at: Vector2, data: Variant) -> void:
 	_move_paths(files, dst)
 
 
-# On peut aussi attraper un dossier dans l'arbre pour le déplacer dans un autre dossier
+# You can also grab a folder in the tree to move it into another folder
 func _tree_get_drag(at: Vector2) -> Variant:
 	var it := _tree.get_item_at_position(at)
 	if it == null:
@@ -3794,9 +3794,9 @@ func _tree_get_drag(at: Vector2) -> Variant:
 
 
 func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
-	EditorInterface.save_all_scenes()          # <-- AJOUT : évite de perdre des modifs au rechargement
+	EditorInterface.save_all_scenes()          # <-- ADDED: avoids losing changes on reload
 	var moved := 0
-	var moves: Array = []                       # <-- AJOUT
+	var moves: Array = []                       # <-- ADDED
 	for p in files:
 		var src := p.trim_suffix("/")
 		if not _can_move_one(src, dst_dir):
@@ -3805,11 +3805,11 @@ func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
 		if FileAccess.file_exists(dst) or DirAccess.dir_exists_absolute(dst):
 			_flash(L.t("« %s » existe déjà") % src.get_file(), true)
 			continue
-		var is_dir := DirAccess.dir_exists_absolute(src)   # <-- AJOUT (avant le rename)
+		var is_dir := DirAccess.dir_exists_absolute(src)   # <-- ADDED (before the rename)
 		if DirAccess.rename_absolute(src, dst) != OK:
 			_flash(L.t("Échec du déplacement"), true)
 			continue
-		moves.append([src, dst, is_dir])                    # <-- AJOUT
+		moves.append([src, dst, is_dir])                    # <-- ADDED
 		for ext in [".import", ".uid"]:
 			if FileAccess.file_exists(src + ext):
 				DirAccess.rename_absolute(src + ext, dst + ext)
@@ -3820,12 +3820,12 @@ func _move_paths(files: PackedStringArray, dst_dir: String) -> void:
 		moved += 1
 	if moved == 0:
 		return
-	_update_references(moves)                               # <-- AJOUT
+	_update_references(moves)                               # <-- ADDED
 	_scan()
 	_flash(L.t("%d élément(s) déplacé(s)") % moved if moved > 1 else L.t("Élément déplacé"))
 
 
-# ---------- Menu contextuel ----------
+# ---------- Context menu ----------
 
 func _ctx_btn(title: String, callback: Callable, color: Color = Color.TRANSPARENT, icon_name: String = "") -> Button:
 	var b := Button.new()
@@ -3851,7 +3851,7 @@ func _ctx_sep() -> void:
 	_ctx_vbox.add_child(HSeparator.new())
 
 
-## Entrée de menu à case à cocher.
+## Checkbox menu entry.
 func _ctx_check(title: String, checked: bool, on_toggle: Callable) -> CheckBox:
 	var cb := CheckBox.new()
 	cb.text = title
@@ -3859,7 +3859,7 @@ func _ctx_check(title: String, checked: bool, on_toggle: Callable) -> CheckBox:
 	cb.focus_mode = Control.FOCUS_NONE
 	cb.button_pressed = checked
 	_style_ghost_button(cb, 8, 3)
-	# Le thème colore le texte d'un bouton coché : on garde la couleur normale
+	# The theme colors the text of a checked button: we keep the normal color
 	var fc: Color = EditorInterface.get_base_control().get_theme_color("font_color", "Button")
 	for n in ["font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
 		cb.add_theme_color_override(n, fc)
@@ -3871,9 +3871,9 @@ func _ctx_check(title: String, checked: bool, on_toggle: Callable) -> CheckBox:
 	return cb
 
 
-## Charge la ressource en mémoire et la garde comme "presse-papiers" du tiroir.
-## Un bouton "Coller" apparaît ensuite au survol de tout champ ressource compatible
-## de l'Inspecteur (ou Alt+V comme raccourci clavier).
+## Loads the resource in memory and keeps it as the drawer's "clipboard".
+## A "Paste" button then appears when hovering any compatible resource field
+## of the Inspector (or Alt+V as a keyboard shortcut).
 func _copy_resource_to_clipboard(path: String) -> void:
 	if DirAccess.dir_exists_absolute(path):
 		_flash(L.t("Impossible de copier un dossier comme ressource"), true)
@@ -3890,8 +3890,8 @@ func _copy_resource_to_clipboard(path: String) -> void:
 	_flash(L.t("« %s » copiée — survolez un champ ressource de l'Inspecteur") % _clip_resource_name)
 
 
-## Vrai si `res` correspond à au moins un des types autorisés par un EditorResourcePicker
-## (types natifs via is_class, et classes de script personnalisées via leur class_name global).
+## True if `res` matches at least one of the types allowed by an EditorResourcePicker
+## (native types via is_class, and custom script classes via their global class_name).
 func _resource_type_matches(res: Resource, allowed: PackedStringArray) -> bool:
 	if allowed.is_empty():
 		return true
@@ -3910,8 +3910,8 @@ func _resource_type_matches(res: Resource, allowed: PackedStringArray) -> bool:
 	return false
 
 
-## Remonte la chaîne de parents depuis le contrôle survolé pour trouver un
-## EditorResourcePicker (le widget d'un champ ressource dans l'Inspecteur).
+## Walks up the parent chain from the hovered control to find an
+## EditorResourcePicker (the widget of a resource field in the Inspector).
 func _picker_under(control: Control) -> EditorResourcePicker:
 	var n: Node = control
 	while n:
@@ -3927,9 +3927,9 @@ func _picker_accepts_clip(picker: EditorResourcePicker) -> bool:
 	return picker.editable and _resource_type_matches(_clip_resource, picker.get_allowed_types())
 
 
-## Cherche un EditorResourcePicker (champ ressource de l'Inspecteur) sous la souris
-## et lui assigne la ressource copiée si le type correspond. Raccourci clavier Alt+V (plugin.gd) ;
-## le bouton "Coller" flottant qui apparaît au survol fait la même chose au clic.
+## Looks for an EditorResourcePicker (Inspector resource field) under the mouse
+## and assigns the copied resource to it if the type matches. Alt+V keyboard shortcut (plugin.gd);
+## the floating "Paste" button that appears on hover does the same on click.
 func try_paste_resource_at_mouse() -> bool:
 	if _clip_resource == null or not is_instance_valid(_clip_resource):
 		_flash(L.t("Aucune ressource copiée : clic droit sur un fichier → « Copier la ressource »"), true)
@@ -3948,17 +3948,17 @@ func try_paste_resource_at_mouse() -> bool:
 		var attendu := ", ".join(allowed) if not allowed.is_empty() else "?"
 		_flash(L.t("Type incompatible : ce champ attend « %s »") % attendu, true)
 		return false
-	# set_edited_resource() ne fait que rafraîchir l'affichage du champ : sans émettre
-	# resource_changed, l'Inspecteur ne répercute jamais la valeur sur la vraie propriété
-	# de l'objet (ex. MeshInstance3D.mesh), qui écrase alors l'affichage au rafraîchissement suivant.
+	# set_edited_resource() only refreshes the field's display: without emitting
+	# resource_changed, the Inspector never propagates the value to the object's real property
+	# (e.g. MeshInstance3D.mesh), which then overwrites the display on the next refresh.
 	picker.set_edited_resource(_clip_resource)
 	picker.emit_signal("resource_changed", _clip_resource)
 	_flash(L.t("« %s » collée dans l'Inspecteur") % _clip_resource_name)
 	return true
 
 
-## Boucle légère qui fait apparaître/suivre le bouton "Coller" flottant au-dessus de
-## tout champ ressource compatible survolé (seulement quand une ressource est copiée).
+## Lightweight loop that makes the floating "Paste" button appear/follow above
+## any compatible hovered resource field (only when a resource is copied).
 func _update_paste_pop_hover() -> void:
 	if _clip_resource == null or not is_instance_valid(_clip_resource):
 		if _paste_pop.visible:
@@ -3968,7 +3968,7 @@ func _update_paste_pop_hover() -> void:
 	var vp := EditorInterface.get_base_control().get_viewport()
 	var hovered: Control = vp.gui_get_hovered_control() if vp else null
 
-	# Ne pas se cacher pendant qu'on se dirige vers le bouton pour cliquer dessus.
+	# Do not hide while heading to the button to click it.
 	if hovered != null and (hovered == _paste_pop or _paste_pop.is_ancestor_of(hovered)):
 		return
 
@@ -3990,8 +3990,8 @@ func _position_paste_pop(picker: EditorResourcePicker) -> void:
 	var origin: Vector2 = _toast_overlay.global_position
 	var btn_size := _paste_pop.size
 
-	# Côté gauche du champ, centré verticalement : la droite reste libre pour le menu
-	# rapide et la flèche déroulante natifs de Godot. Toujours borné à l'intérieur du champ.
+	# Left side of the field, vertically centered: the right stays free for Godot's native
+	# quick menu and dropdown arrow. Always clamped inside the field.
 	var x: float = rect.position.x + 2.0
 	x = minf(x, rect.position.x + rect.size.x - btn_size.x - 2.0)
 	x = maxf(x, rect.position.x + 1.0)
@@ -4040,13 +4040,13 @@ func _on_paste_pop_pressed() -> void:
 	_hide_paste_pop()
 
 
-## Boucle légère qui fait apparaître/suivre le bouton "Copier" flottant au-dessus de
-## la ressource de la liste du tiroir actuellement survolée par la souris.
+## Lightweight loop that makes the floating "Copy" button appear/follow above
+## the drawer's list resource currently hovered by the mouse.
 func _update_copy_pop_hover() -> void:
 	var vp := EditorInterface.get_base_control().get_viewport()
 	var hovered: Control = vp.gui_get_hovered_control() if vp else null
 
-	# Ne pas se cacher pendant qu'on se dirige vers le bouton pour cliquer dessus.
+	# Do not hide while heading to the button to click it.
 	if hovered != null and (hovered == _copy_pop or _copy_pop.is_ancestor_of(hovered)):
 		return
 	if hovered == null or not (hovered == _list or _list.is_ancestor_of(hovered)):
@@ -4066,7 +4066,7 @@ func _update_copy_pop_hover() -> void:
 		return
 
 	if not _position_copy_pop(idx):
-		# élément (presque) entièrement sorti de la zone visible : pas de bouton
+		# item (almost) entirely out of the visible area: no button
 		if _copy_pop.visible:
 			_hide_copy_pop()
 		return
@@ -4077,9 +4077,9 @@ func _update_copy_pop_hover() -> void:
 
 
 func _position_copy_pop(idx: int) -> bool:
-	# Le bouton vit dans un calque non découpé : on le garde explicitement dans la partie
-	# VISIBLE de la liste (un fichier à moitié sorti en haut ne doit pas le faire déborder sur
-	# la barre de recherche / le chemin). Retourne false s'il n'y a pas de place visible.
+	# The button lives in an unclipped layer: we explicitly keep it inside the
+	# VISIBLE part of the list (a file half out at the top must not make it overflow onto
+	# the search bar / the path). Returns false if there is no visible room.
 	var item_rect := _item_rect(idx, false)
 	var vbar := _list.get_v_scroll_bar()
 	var view_w := _list.size.x - (vbar.size.x if vbar.visible else 0.0)
@@ -4091,12 +4091,12 @@ func _position_copy_pop(idx: int) -> bool:
 	var origin: Vector2 = _toast_overlay.global_position
 	var list_origin: Vector2 = _list.global_position
 
-	# Coin haut-droit de la partie visible de l'élément
+	# Top-right corner of the visible part of the item
 	var x: float = vis.end.x - btn_size.x - 3.0
 	x = maxf(x, vis.position.x + 1.0)
 	var y: float = vis.position.y + 3.0
 	y = minf(y, vis.position.y + maxf(vis.size.y - btn_size.y - 1.0, 1.0))
-	# Garde-fou final : jamais en dehors de la liste
+	# Final safeguard: never outside the list
 	x = clampf(x, 0.0, maxf(view_w - btn_size.x, 0.0))
 	y = clampf(y, 0.0, maxf(_list.size.y - btn_size.y, 0.0))
 	_copy_pop.position = list_origin + Vector2(x, y) - origin
@@ -4118,8 +4118,8 @@ func _show_copy_pop() -> void:
 
 func _hide_copy_pop() -> void:
 	_copy_target_path = ""
-	# Déjà en train de disparaître : ne surtout pas relancer le tween (la boucle de survol
-	# le recréait à chaque frame, ce qui figeait le fondu et le rendait très lent).
+	# Already fading out: above all, do not restart the tween (the hover loop
+	# recreated it every frame, which froze the fade and made it very slow).
 	if _copy_hiding or not is_instance_valid(_copy_pop):
 		return
 	if _copy_tween and _copy_tween.is_valid():
@@ -4355,13 +4355,13 @@ func _show_context() -> void:
 		_ctx_btn(L.t("Supprimer (Suppr)"), func() -> void: _confirm_delete(sel), COLOR_DANGER, "Remove")
 
 	_place_ctx_popup()
-	# PopupPanel est une Window (pas de "scale"/"modulate") : on anime son contenu à la place.
+	# PopupPanel is a Window (no "scale"/"modulate"): we animate its content instead.
 	_ctx_vbox.modulate.a = 0.0
 	create_tween().tween_property(_ctx_vbox, "modulate:a", 1.0, 0.11) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 
 
-# ---------- Création / renommage / suppression ----------
+# ---------- Creation / renaming / deletion ----------
 
 func _valid_name(n: String) -> bool:
 	if n.strip_edges().is_empty():
@@ -4387,7 +4387,7 @@ func _scan() -> void:
 
 
 func _target_dir() -> String:
-	# Si un dossier est sélectionné on crée dedans, sinon dans le dossier courant
+	# If a folder is selected we create inside it, otherwise in the current folder
 	return current_dir
 
 
@@ -4426,11 +4426,11 @@ func _create_scene() -> void:
 	)
 
 
-## Vrai seulement si le projet a déjà une solution C# (un fichier .csproj à la racine).
-## Sans ça, Godot n'indexe pas les scripts .cs dans son EditorFileSystem : le fichier
-## existerait bien sur le disque mais resterait invisible partout dans l'éditeur, pas
-## seulement dans le tiroir (c'est pour ça qu'on bloque la création plutôt que de laisser
-## créer un fichier "fantôme" qui ferait croire ensuite qu'il existe déjà).
+## True only if the project already has a C# solution (a .csproj file at the root).
+## Without it, Godot does not index .cs scripts in its EditorFileSystem: the file
+## would exist on disk but stay invisible everywhere in the editor, not only
+## in the drawer (that is why we block creation rather than let a "ghost"
+## file be created that would later make people think it already exists).
 func _has_csharp_project() -> bool:
 	var d := DirAccess.open("res://")
 	if d == null:
@@ -4444,16 +4444,16 @@ func _has_csharp_project() -> bool:
 	return false
 
 
-## Langages proposés dans le menu déroulant : uniquement ceux que CE build de Godot connaît
-## réellement (ScriptServer ne liste "C#" que sur l'édition .NET, par exemple), exactement
-## comme le fait le dialogue natif "Create Script" de Godot. On ajoute "Shader" (pas un
-## ScriptLanguage à part entière) et "Personnalisé..." (extension libre) à la fin.
-## Langages proposés dans le menu déroulant : uniquement ceux que CE build de Godot connaît
-## réellement. `ScriptServer` (utilisé en interne par le dialogue natif "Create Script") n'est
-## pas exposé à GDScript, donc on détecte autrement : GDScript est toujours là, et C# seulement
-## si ce build a le tag de fonctionnalité "mono" (les éditions .NET de Godot le définissent).
-## Chaque entrée est soit {"sep": "Nom de catégorie"} (un séparateur non sélectionnable dans
-## le menu), soit {"name": ..., "ext": ...} (une option réelle).
+## Languages offered in the dropdown: only those THIS Godot build knows
+## about (ScriptServer only lists "C#" on the .NET edition, for example), exactly
+## like Godot's native "Create Script" dialog does. We add "Shader" (not a
+## ScriptLanguage in its own right) and "Custom..." (free extension) at the end.
+## Languages offered in the dropdown: only those THIS Godot build knows
+## about. `ScriptServer` (used internally by the native "Create Script" dialog) is not
+## exposed to GDScript, so we detect differently: GDScript is always there, and C# only
+## if this build has the "mono" feature tag (the .NET editions of Godot define it).
+## Each entry is either {"sep": "Category name"} (a non-selectable separator in
+## the menu), or {"name": ..., "ext": ...} (a real option).
 func _script_languages() -> Array:
 	var out: Array = []
 	out.append({"sep": L.t("Scripts")})
@@ -4461,8 +4461,8 @@ func _script_languages() -> Array:
 	if OS.has_feature("mono"):
 		out.append({"name": "C#", "ext": "cs"})
 	out.append({"name": L.t("Shader"), "ext": "gdshader"})
-	# Types de fichiers texte courants, pas liés à un langage de script en particulier
-	# (créer un simple .txt ou .json à côté des assets est un besoin fréquent).
+	# Common text file types, not tied to a particular script language
+	# (creating a simple .txt or .json next to the assets is a frequent need).
 	out.append({"sep": L.t("Fichiers texte")})
 	out.append({"name": L.t("Texte"), "ext": "txt"})
 	out.append({"name": "JSON", "ext": "json"})
@@ -4498,9 +4498,9 @@ func _create_script() -> void:
 	lang_row.add_child(lang_lbl)
 	var lang_opt := OptionButton.new()
 	lang_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	# Correspondance entre l'index du menu (les séparateurs de catégorie comptent pour une
-	# case, même si on ne peut pas les sélectionner) et l'index réel dans "langs" : -1 pour
-	# un séparateur, sinon l'index de l'entrée correspondante dans "langs".
+	# Mapping between the menu index (category separators count as one
+	# slot, even though they cannot be selected) and the real index in "langs": -1 for
+	# a separator, otherwise the index of the matching entry in "langs".
 	var entry_of_index: Array = []
 	for i in langs.size():
 		var entry: Dictionary = langs[i]
@@ -4537,8 +4537,8 @@ func _create_script() -> void:
 	name_row.add_child(name_edit)
 	d.register_text_enter(name_edit)
 
-	# Présélectionne le dernier langage utilisé pour ce tiroir, sinon GDScript (premier élément
-	# sélectionnable : on saute l'éventuel séparateur de catégorie en tête de liste).
+	# Preselects the last language used for this drawer, otherwise GDScript (first selectable
+	# item: we skip any category separator at the head of the list).
 	var start_idx := 0
 	for oi in entry_of_index.size():
 		var li: int = entry_of_index[oi]
@@ -4548,8 +4548,8 @@ func _create_script() -> void:
 				break
 	lang_opt.select(start_idx)
 
-	# Le nom proposé se met à jour avec l'extension du langage choisi, comme le champ
-	# "Path" du dialogue natif de Godot quand on change de langage.
+	# The suggested name updates with the chosen language's extension, like the
+	# "Path" field of Godot's native dialog when the language changes.
 	var update_name := func() -> void:
 		var entry: Dictionary = langs[entry_of_index[lang_opt.selected]]
 		var is_custom: bool = entry.ext.is_empty()
@@ -4599,7 +4599,7 @@ func _create_script() -> void:
 	name_edit.select_all()
 
 
-## Contenu initial selon l'extension : GDScript, C# et shader ont un modèle, le reste est vide.
+## Initial content depending on the extension: GDScript, C# and shader have a template, the rest is empty.
 func _script_template(ext: String, base_name: String) -> String:
 	match ext:
 		"gd":
@@ -4634,8 +4634,8 @@ func _rename(path: String) -> void:
 		if FileAccess.file_exists(dst) or DirAccess.dir_exists_absolute(dst):
 			_flash(L.t("« %s » existe déjà") % n, true)
 			return
-		EditorInterface.save_all_scenes()                      # ici plutôt qu'avant le dialogue
-		var is_dir := DirAccess.dir_exists_absolute(src)       # AVANT le rename
+		EditorInterface.save_all_scenes()                      # here rather than before the dialog
+		var is_dir := DirAccess.dir_exists_absolute(src)       # BEFORE the rename
 		if DirAccess.rename_absolute(src, dst) != OK:
 			_flash(L.t("Échec du renommage"), true)
 			return
@@ -4646,7 +4646,7 @@ func _rename(path: String) -> void:
 		current_dir = _swap_prefix(current_dir, src, dst)
 		for i in _history.size():
 			_history[i] = _swap_prefix(_history[i], src, dst)
-		_update_references([[src, dst, is_dir]])               # AJOUT
+		_update_references([[src, dst, is_dir]])               # ADDED
 		_pending_select = dst
 		_scan()
 		_flash(L.t("Renommé en « %s »") % n)
@@ -4682,8 +4682,8 @@ func _copy_dir(src: String, dst: String) -> void:
 
 func _copy_file(src: String, dst: String) -> void:
 	DirAccess.copy_absolute(src, dst)
-	# Un .tscn/.tres embarque son UID dans l'en-tête : on le retire de la copie pour
-	# éviter un doublon d'UID (Godot en attribue un nouveau).
+	# A .tscn/.tres embeds its UID in the header: we remove it from the copy to
+	# avoid a duplicate UID (Godot assigns a new one).
 	if dst.get_extension().to_lower() in ["tscn", "tres"]:
 		var text := FileAccess.get_file_as_string(dst)
 		var nl := text.find("\n")
@@ -4755,7 +4755,7 @@ func _collect_text_files(dir: String, out: Array) -> void:
 			out.append(dir.path_join(f))
 
 
-# moves : Array de [src, dst, is_dir]
+# moves: Array of [src, dst, is_dir]
 func _update_references(moves: Array) -> void:
 	if moves.is_empty():
 		return
@@ -4772,9 +4772,9 @@ func _update_references(moves: Array) -> void:
 		for m in moves:
 			var src: String = m[0]
 			var dst: String = m[1]
-			# Chemin exact entre guillemets (évite de toucher "x.tres2", etc.)
+			# Exact path in quotes (avoids touching "x.tres2", etc.)
 			new_text = new_text.replace('"' + src + '"', '"' + dst + '"')
-			if m[2]:  # dossier : tout ce qui commence par src + "/"
+			if m[2]:  # folder: everything that starts with src + "/"
 				new_text = new_text.replace('"' + src + "/", '"' + dst + "/")
 		if new_text != text:
 			var w := FileAccess.open(path, FileAccess.WRITE)
@@ -4783,7 +4783,7 @@ func _update_references(moves: Array) -> void:
 				w.close()
 				changed_files += 1
 	if changed_files > 0:
-		# Recharge les scènes ouvertes, sinon l'éditeur risque de réécrire les anciens chemins
+		# Reload the open scenes, otherwise the editor may rewrite the old paths
 		for scene in EditorInterface.get_open_scenes():
 			EditorInterface.reload_scene_from_path(scene)
 
@@ -4823,7 +4823,7 @@ func _rewrite_paths(src: String, dst: String) -> void:
 	_save_cfg()
 
 
-# ---------- Dialogues ----------
+# ---------- Dialogs ----------
 
 func _prompt_string(title: String, val: String, on_ok: Callable) -> void:
 	var d := ConfirmationDialog.new()
@@ -4861,9 +4861,9 @@ func _confirm(title: String, text: String, on_ok: Callable) -> void:
 	d.popup_centered()
 
 
-# ---------- Favoris / récents / config ----------
+# ---------- Favorites / recents / config ----------
 
-# Les favoris du dock Fichiers de Godot font foi (EditorSettings.get_favorites / set_favorites).
+# Godot's FileSystem dock favorites are authoritative (EditorSettings.get_favorites / set_favorites).
 func _sync_favorites() -> void:
 	var es := EditorInterface.get_editor_settings()
 	if es == null or not es.has_method("get_favorites"):
@@ -4875,7 +4875,7 @@ func _sync_favorites() -> void:
 		if not godot_favs.has(n):
 			godot_favs.append(n)
 	if not _fav_migrated:
-		# Une seule fois : les favoris créés avant cette version sont ajoutés à ceux de Godot
+		# Once only: favorites created before this version are added to Godot's
 		_fav_migrated = true
 		var added := false
 		for p in _favorites:
@@ -4956,7 +4956,7 @@ func _load_cfg() -> void:
 
 
 func _save_cfg() -> void:
-	# Écriture différée : évite d'écrire le fichier à chaque pas du zoom / navigation
+	# Deferred write: avoids writing the file at every zoom step / navigation
 	_save_dirty = true
 	if _save_timer != null and _save_timer.is_inside_tree():
 		_save_timer.start()

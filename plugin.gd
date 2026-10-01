@@ -4,15 +4,15 @@ extends EditorPlugin
 const Drawer := preload("res://addons/asset_drawer/drawer.gd")
 const L := preload("res://addons/asset_drawer/lang.gd")
 
-# true  : Ctrl+Espace ouvre le tiroir même quand l'éditeur de script a le focus
-#         (l'autocomplétion via Ctrl+Espace est alors remplacée par le tiroir).
-# false : dans l'éditeur de script, Ctrl+Espace reste l'autocomplétion.
+# true  : Ctrl+Space opens the drawer even when the script editor has focus
+#         (Ctrl+Space autocompletion is then replaced by the drawer).
+# false : in the script editor, Ctrl+Space stays autocompletion.
 const OPEN_IN_CODE_EDITOR := true
 
-# true : le raccourci d'ouverture est ignoré tant que la caméra est en free look
-#        (clic droit maintenu dans la vue 3D, ou free look basculé avec Shift+F).
-#        Ça évite d'ouvrir le tiroir quand Ctrl (descendre) + Espace (monter)
-#        sont pressés ensemble pour se déplacer.
+# true : the open shortcut is ignored while the camera is in free look
+#        (right mouse button held in the 3D view, or free look toggled with Shift+F).
+#        This avoids opening the drawer when Ctrl (move down) + Space (move up)
+#        are pressed together to move around.
 const BLOCK_IN_FREELOOK := true
 
 var drawer: Control
@@ -37,7 +37,7 @@ func _enter_tree() -> void:
 	add_tool_menu_item("Asset Drawer", Callable(self, "_on_menu_toggle"))
 	set_process_input(true)
 
-	# Le tiroir suit le thème de l'éditeur (couleur de base, contraste, accent).
+	# The drawer follows the editor theme (base color, contrast, accent).
 	var es := EditorInterface.get_editor_settings()
 	if not es.settings_changed.is_connected(_on_settings_changed):
 		es.settings_changed.connect(_on_settings_changed)
@@ -50,7 +50,7 @@ func _create_drawer() -> void:
 
 
 func _on_settings_changed() -> void:
-	# Différé : on laisse d'abord l'éditeur régénérer son thème avant de relire les couleurs.
+	# Deferred: we first let the editor regenerate its theme before re-reading the colors.
 	if _theme_check_queued:
 		return
 	_theme_check_queued = true
@@ -61,14 +61,14 @@ func _check_theme() -> void:
 	_theme_check_queued = false
 	if not is_instance_valid(drawer) or not drawer.palette_changed():
 		return
-	# Recrée le tiroir avec la nouvelle palette. Son état (dossier, hauteur, favoris...)
-	# est déjà dans la config, il est relu par le nouveau tiroir.
+	# Recreates the drawer with the new palette. Its state (folder, height, favorites...)
+	# is already in the config, and is read back by the new drawer.
 	var was_open: bool = drawer.is_open
 	var old := drawer
 	drawer = null
-	old.get_parent().remove_child(old)   # déclenche _exit_tree : sauvegarde + nettoyage
+	old.get_parent().remove_child(old)   # triggers _exit_tree: save + cleanup
 	old.queue_free()
-	await get_tree().process_frame       # laisse partir l'ancienne pastille / overlay (mêmes noms)
+	await get_tree().process_frame       # lets the old pill / overlay go away (same names)
 	if not is_inside_tree():
 		return
 	_create_drawer()
@@ -96,8 +96,8 @@ func _on_menu_toggle() -> void:
 
 
 func _is_freelook_active() -> bool:
-	# Pendant le free look, Godot capture la souris (clic droit maintenu OU free look
-	# basculé avec Shift+F). Le test du clic droit sert de filet de sécurité.
+	# During free look, Godot captures the mouse (right button held OR free look
+	# toggled with Shift+F). The right-click test acts as a safety net.
 	return Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
 		or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 
@@ -109,10 +109,10 @@ func _input(event: InputEvent) -> void:
 		return
 	var key := event as InputEventKey
 	if key.keycode == KEY_SPACE and key.ctrl_pressed and not key.alt_pressed and not key.shift_pressed and not key.meta_pressed:
-		# Free look actif : on laisse passer la touche à l'éditeur (déplacement de la caméra).
+		# Free look active: we let the key through to the editor (camera movement).
 		if BLOCK_IN_FREELOOK and _is_freelook_active():
 			return
-		# Ctrl+Espace sert aussi à l'autocomplétion : voir OPEN_IN_CODE_EDITOR en haut du fichier.
+		# Ctrl+Space is also used for autocompletion: see OPEN_IN_CODE_EDITOR at the top of the file.
 		if not OPEN_IN_CODE_EDITOR:
 			var focus := EditorInterface.get_base_control().get_viewport().gui_get_focus_owner()
 			if focus is TextEdit and not drawer.is_ancestor_of(focus):
@@ -123,6 +123,6 @@ func _input(event: InputEvent) -> void:
 		drawer.close()
 		get_viewport().set_input_as_handled()
 	elif key.keycode == KEY_V and key.alt_pressed and not key.ctrl_pressed and not key.shift_pressed and not key.meta_pressed:
-		# Colle la ressource copiée dans le tiroir sur le champ ressource de l'Inspecteur survolé par la souris.
+		# Pastes the copied resource from the drawer onto the Inspector resource field hovered by the mouse.
 		if drawer.try_paste_resource_at_mouse():
 			get_viewport().set_input_as_handled()

@@ -1,10 +1,11 @@
 @tool
 extends RefCounted
-## Localisation de l'Asset Drawer.
-## Les textes du code sont écrits en français (clé). Si la langue de l'éditeur Godot est le
-## français, ils sont affichés tels quels ; sinon la traduction anglaise ci-dessous est utilisée
-## (et, à défaut de traduction, le texte d'origine). La langue est lue une fois par session :
-## changer la langue de l'éditeur demande de toute façon de le redémarrer.
+## Asset Drawer localization.
+## The texts in the code are written in French (the key). If the Godot editor language is
+## French, they are displayed as is; otherwise the English translation below is used
+## (and, failing a translation, the original text). The language is read once per session:
+## changing the editor language requires restarting it anyway.
+
 
 const EN := {
 	"Scripts": "Scripts",
