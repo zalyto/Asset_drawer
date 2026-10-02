@@ -1,0 +1,36 @@
+# Godot
+.godot/
+
+# Godot cache / temporary files
+*.tmp
+*.temp
+*.bak
+
+# Exported builds
+.export/
+build/
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Mono / C#
+# Uncomment if your plugin uses C#
+# .mono/
+# obj/
+# bin/
+
+# Import/cache files
+.import/
+
+# Backup files
+*~
