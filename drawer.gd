@@ -13,6 +13,7 @@ const SHOW_HINT := true         # "Asset Drawer  Ctrl+Space" pill at the bottom 
 const HINT_BOTTOM := 44.0
 const MAX_ITEMS := 3000         # cap on displayed items (performance)
 const SEARCH_DELAY := 0.18      # search debounce
+const FOCUS_SEARCH_ON_OPEN := true   # focus the search bar when the drawer opens: just start typing
 const SAVE_DELAY := 0.6         # config save debounce
 const PREVIEW_DELAY := 0.08     # thumbnail loading debounce
 const STICKY_MAX := 3           # max number of parent folders pinned at the top of the tree
@@ -21,6 +22,7 @@ const ICON_BUCKETS := [24, 64, 96, 160]
 const HIDDEN_ALPHA := 0.45      # opacity of hidden items when they are shown
 const CFG_PATH := "res://.godot/asset_drawer.cfg"
 const L := preload("res://addons/asset_drawer/lang.gd")   # FR / EN translations
+const Sc := preload("res://addons/asset_drawer/shortcuts.gd")   # customizable shortcuts (Project Settings)
 
 # --- Palette --------------------------------------------------------------
 # The background / border / text colors below are VARIABLES: the values written here
@@ -103,6 +105,7 @@ var _resizing := false
 var _view_list := false
 var _details_visible := true
 var _context_path := ""
+var _ctx_sel_override: PackedStringArray = PackedStringArray()   # right-click on a tree item: not part of the list selection
 var _clip_resource: Resource
 var _clip_resource_name := ""
 var _paste_pop: Button
@@ -129,6 +132,7 @@ var _split: HSplitContainer
 var _left_vbox: VBoxContainer
 var _tree: Tree
 var _tree_tools: HBoxContainer
+var _tree_tools_box: PanelContainer   # rounded container around the tree buttons
 var _sticky_box: Control
 var _tree_vscroll: VScrollBar
 var _sticky_sig := ""
@@ -217,6 +221,8 @@ var _save_dirty := false
 var _truncated := false
 var _icon_bucket := 0
 var _search_timer: Timer
+var _opened_msec := 0
+var _create_menu_open := false   # the context popup currently shows the Shift+A create menu
 var _save_timer: Timer
 var _preview_timer: Timer
 
@@ -518,11 +524,26 @@ func _build_ui() -> void:
 		left_tabs.add_child(btn)
 		_left_tab_buttons.append(btn)
 
+	# Tools row (always visible): tree buttons on the left (Folders tab only), then the
+	# "create" container (new folder / scene / script) pushed to the right.
+	var tools_row := HBoxContainer.new()
+	tools_row.add_theme_constant_override("separation", 4)
+	_left_vbox.add_child(tools_row)
+	# Same rounded container as the "create" box on the right
+	_tree_tools_box = PanelContainer.new()
+	_tree_tools_box.add_theme_stylebox_override("panel", _topbar_stylebox())
+	tools_row.add_child(_tree_tools_box)
+	var tools_pad := _pad(2, 1)
+	_tree_tools_box.add_child(tools_pad)
 	_tree_tools = HBoxContainer.new()
-	_tree_tools.add_theme_constant_override("separation", 2)
-	_left_vbox.add_child(_tree_tools)
+	_tree_tools.add_theme_constant_override("separation", 0)
+	tools_pad.add_child(_tree_tools)
 	_add_tree_tool_button("CollapseTree", "⇤", L.t("Tout replier"), _collapse_all_folders)
 	_add_tree_tool_button("ExpandTree", "◎", L.t("Localiser le dossier courant"), _sync_tree_selection)
+	var tools_spacer := Control.new()
+	tools_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tools_row.add_child(tools_spacer)
+	tools_row.add_child(_build_create_box())
 
 	_tree = Tree.new()
 	_tree.hide_root = false
@@ -801,7 +822,7 @@ func _build_toolbar() -> Control:
 	_btn_fwd.pressed.connect(func() -> void: _hist_go(1))
 	nav_row.add_child(_btn_fwd)
 	_btn_up = _icon_btn("ArrowUp", "^")
-	_btn_up.tooltip_text = L.t("Dossier parent (Retour arrière)")
+	_btn_up.tooltip_text = Sc.with_hint(L.t("Dossier parent"), "parent_folder")
 	_btn_up.pressed.connect(_go_up)
 	nav_row.add_child(_btn_up)
 
@@ -813,7 +834,7 @@ func _build_toolbar() -> Control:
 
 	# 3) Search: same background / outline as the containers
 	_search = LineEdit.new()
-	_search.placeholder_text = L.t("Rechercher... (Ctrl+F)")
+	_search.placeholder_text = Sc.with_hint(L.t("Rechercher..."), "focus_search")
 	_search.clear_button_enabled = true
 	_search.right_icon = EditorInterface.get_base_control().get_theme_icon("Search", "EditorIcons")
 	_search.custom_minimum_size = Vector2(170, BAR_H)
@@ -828,6 +849,7 @@ func _build_toolbar() -> Control:
 	_search.add_theme_stylebox_override("focus", search_focus)
 	_search.add_theme_stylebox_override("read_only", search_box)
 	_search.text_changed.connect(func(_t: String) -> void: _search_timer.start())
+	_search.gui_input.connect(_on_search_gui_input)
 	row.add_child(_search)
 
 	# Search scope: whole project / current folder
@@ -918,7 +940,7 @@ func _build_toolbar() -> Control:
 	actions.add_child(dock_btn)
 
 	var close_btn := _icon_btn("Close", "X")
-	close_btn.tooltip_text = L.t("Fermer (Échap)")
+	close_btn.tooltip_text = Sc.with_hint(L.t("Fermer"), "close_drawer")
 	close_btn.pressed.connect(close)
 	actions.add_child(close_btn)
 
@@ -1076,7 +1098,7 @@ func _build_details_panel() -> PanelContainer:
 	_details_btn_box.add_child(_btn_open)
 
 	_btn_copy_res = _detail_btn("ActionCopy,Duplicate", L.t("Copier la ressource"),
-		L.t("Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou Alt+V au clavier)"))
+		L.t("Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou %s au clavier)") % Sc.label("paste_resource", "–"))
 	# Same green as the "Paste resource" button (COLOR_RES_ACTION): the two actions
 	# form a visual pair (copy here → paste over there).
 	_btn_copy_res.add_theme_stylebox_override("normal", _make_stylebox(COLOR_RES_ACTION, Color.TRANSPARENT, 4))
@@ -1292,21 +1314,33 @@ func _build_footer() -> Control:
 	_status.clip_text = true
 	footer.add_child(_status)
 
-	var btn_f := _icon_btn("Folder", L.t("+Dossier"))
-	btn_f.tooltip_text = L.t("Nouveau dossier")
-	btn_f.pressed.connect(_create_folder)
-	footer.add_child(btn_f)
-	var btn_sc := Button.new()
-	btn_sc.text = L.t("+Scène")
-	_style_ghost_button(btn_sc, 6, 2)
-	btn_sc.pressed.connect(_create_scene)
-	footer.add_child(btn_sc)
-	var btn_st := Button.new()
-	btn_st.text = "+Script"
-	_style_ghost_button(btn_st, 6, 2)
-	btn_st.pressed.connect(_create_script)
-	footer.add_child(btn_st)
 	return footer
+
+
+## Small rounded container with the most common operations: new folder / scene / script.
+## Lives at the top of the left panel so they are always one click away.
+func _build_create_box() -> Control:
+	var box := PanelContainer.new()
+	box.add_theme_stylebox_override("panel", _topbar_stylebox())
+	var pad := _pad(2, 1)
+	box.add_child(pad)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 0)
+	pad.add_child(row)
+
+	var btn_f := _icon_btn("Folder", "+" + L.t("Dossier"))
+	btn_f.tooltip_text = L.t("Nouveau dossier")
+	btn_f.pressed.connect(func() -> void: _create_folder())
+	row.add_child(btn_f)
+	var btn_sc := _icon_btn("PackedScene,Node", L.t("+Scène"))
+	btn_sc.tooltip_text = L.t("Nouvelle scène")
+	btn_sc.pressed.connect(func() -> void: _create_scene())
+	row.add_child(btn_sc)
+	var btn_st := _icon_btn("ScriptCreate,Script", "+Script")
+	btn_st.tooltip_text = L.t("Nouveau script")
+	btn_st.pressed.connect(func() -> void: _create_script())
+	row.add_child(btn_st)
+	return box
 
 
 func _topbar_stylebox() -> StyleBoxFlat:
@@ -1386,9 +1420,12 @@ func _add_press_bounce(b: Button, hover_scale: float = 1.08, press_scale: float 
 func _bounce_to(node: Control, target: Vector2, dur: float) -> void:
 	if not is_instance_valid(node):
 		return
-	var tw := node.get_meta("_bounce_tween", null)
-	if tw != null and (tw as Tween).is_valid():
-		(tw as Tween).kill()
+	# has_meta() first: get_meta(key, null) still logs an error on a missing key, because
+	# null is indistinguishable from "no default given" on the engine side.
+	if node.has_meta("_bounce_tween"):
+		var tw: Tween = node.get_meta("_bounce_tween")
+		if tw != null and is_instance_valid(tw) and tw.is_valid():
+			tw.kill()
 	var t := create_tween().set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	t.tween_property(node, "scale", target, dur)
 	node.set_meta("_bounce_tween", t)
@@ -1408,6 +1445,13 @@ func _style_item_list(list: ItemList) -> void:
 	list.add_theme_stylebox_override("cursor_unfocused", StyleBoxEmpty.new())
 	# "hovered" only exists from Godot 4.3; silently ignored on earlier versions.
 	list.add_theme_stylebox_override("hovered", _make_stylebox(_ov(0.07), _ov(0.14), 8, 1))
+	# Selected AND hovered: without these two, Godot 4.3+ falls back to its default grey style,
+	# so the accent selection turned grey under the mouse. Same look, slightly stronger fill.
+	var sel_hover := _make_stylebox(Color(accent.r, accent.g, accent.b, 0.30), Color(accent.r, accent.g, accent.b, 1.0), 8, 2)
+	sel_hover.shadow_color = Color(accent.r, accent.g, accent.b, 0.45)
+	sel_hover.shadow_size = 6
+	list.add_theme_stylebox_override("hovered_selected", sel_hover)
+	list.add_theme_stylebox_override("hovered_selected_focus", sel_hover)
 
 
 func _update_nav_buttons() -> void:
@@ -1457,7 +1501,7 @@ func _pill_style(bg: Color) -> StyleBoxFlat:
 func _switch_left_tab(idx: int) -> void:
 	_active_left_tab = idx
 	_tree.visible = (idx == 0)
-	_tree_tools.visible = (idx == 0)
+	_tree_tools_box.visible = (idx == 0)
 	_tab_list.visible = (idx != 0)
 	_btn_new_set.visible = (idx == 3)
 	_refresh_left_tab_content()
@@ -1688,6 +1732,14 @@ func _refresh() -> void:
 	if not is_inside_tree() or _list == null:
 		return
 	_sync_favorites()
+	var fs := EditorInterface.get_resource_filesystem()
+	# While the editor rescans (e.g. right after a rename), get_filesystem_path() returns null
+	# even for folders that exist: that used to make the code below think the current folder was
+	# gone and send us back to res://. We wait for filesystem_changed, which refreshes us when done.
+	if _active_set.is_empty() and current_dir != "res://" and DirAccess.dir_exists_absolute(current_dir) \
+			and fs.get_filesystem_path(current_dir) == null:
+		_dirty = true
+		return
 	_dirty = false
 	var base := EditorInterface.get_base_control()
 	var prev_selected := _selected_paths()
@@ -1700,8 +1752,8 @@ func _refresh() -> void:
 	_item_colors.clear()
 	_dir_paths.clear()
 	# If the current folder is gone, go up
-	var fs := EditorInterface.get_resource_filesystem()
-	while _active_set.is_empty() and current_dir != "res://" and (fs.get_filesystem_path(current_dir) == null or (not _show_hidden and _is_hidden(current_dir))):
+	# Folder existence is checked on disk (reliable), not through the editor's file tree
+	while _active_set.is_empty() and current_dir != "res://" and (not DirAccess.dir_exists_absolute(current_dir) or (not _show_hidden and _is_hidden(current_dir))):
 		current_dir = current_dir.trim_suffix("/").get_base_dir()
 		if current_dir == "res:":
 			current_dir = "res://"
@@ -2192,7 +2244,7 @@ func _on_scope_toggled(on: bool) -> void:
 
 func _update_search_ui() -> void:
 	if _search != null:
-		_search.placeholder_text = L.t("Rechercher dans tout le projet... (Ctrl+F)") if _search_all else L.t("Rechercher dans ce dossier... (Ctrl+F)")
+		_search.placeholder_text = Sc.with_hint(L.t("Rechercher dans tout le projet..."), "focus_search") if _search_all else Sc.with_hint(L.t("Rechercher dans ce dossier..."), "focus_search")
 	if _btn_scope != null:
 		_btn_scope.tooltip_text = L.t("Recherche : tout le projet (cliquer pour limiter au dossier courant)") if _search_all else L.t("Recherche : dossier courant (cliquer pour chercher dans tout le projet)")
 
@@ -2528,15 +2580,9 @@ func _on_tree_selected() -> void:
 # ---------- Tree: pinned (sticky) items, single click, tools ----------
 
 func _add_tree_tool_button(icon_name: String, fallback: String, tip: String, cb: Callable) -> void:
-	var b := Button.new()
-	b.flat = true
-	b.focus_mode = Control.FOCUS_NONE
+	# Ghost button (same as the others): a rounded background appears on hover / press
+	var b := _icon_btn(icon_name, fallback)
 	b.tooltip_text = tip
-	var base := EditorInterface.get_base_control()
-	if base.has_theme_icon(icon_name, "EditorIcons"):
-		b.icon = base.get_theme_icon(icon_name, "EditorIcons")
-	else:
-		b.text = fallback
 	b.pressed.connect(cb)
 	_tree_tools.add_child(b)
 
@@ -2862,12 +2908,28 @@ func _reveal_tree_item(item: TreeItem) -> void:
 		_tree_vscroll.value = maxf(0.0, _tree_vscroll.value - (need - y_top))
 
 
-# Single click on a tree folder: navigation (through the selection) + expansion
+# Single click on a tree folder: navigation (through the selection) + expansion.
+# Right click: context menu on that folder, without touching the current tree selection
+# (so right-clicking a different folder doesn't navigate you away from where you are).
 func _on_tree_gui_input(ev: InputEvent) -> void:
 	if not (ev is InputEventMouseButton):
 		return
 	var mb := ev as InputEventMouseButton
-	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed or mb.double_click:
+	if not mb.pressed:
+		return
+	if mb.button_index == MOUSE_BUTTON_RIGHT:
+		var ritem := _tree.get_item_at_position(mb.position)
+		if ritem == null:
+			return
+		var rpath := str(ritem.get_metadata(0))
+		if rpath.is_empty():
+			return
+		_context_path = rpath
+		_ctx_sel_override = PackedStringArray([rpath])
+		_show_context()
+		_tree.accept_event()
+		return
+	if mb.button_index != MOUSE_BUTTON_LEFT or mb.double_click:
 		return
 	var item := _tree.get_item_at_position(mb.position)
 	if item == null:
@@ -3040,7 +3102,44 @@ func open() -> void:
 	else:
 		_schedule_previews()
 	_animate_open(base)
-	_list.grab_focus()
+	_opened_msec = Time.get_ticks_msec()
+	if FOCUS_SEARCH_ON_OPEN:
+		# Deferred: the key press that opened the drawer is fully consumed first
+		_focus_search.call_deferred()
+	else:
+		_list.grab_focus()
+
+
+## Puts the keyboard focus in the search bar and selects its text, so typing starts a new search.
+func _focus_search() -> void:
+	if not is_open or _search == null:
+		return
+	_search.grab_focus()
+	_search.select_all()
+
+
+## Keyboard flow from the search bar to the results: Down / Enter moves to the list.
+func _on_search_gui_input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var k := event as InputEventKey
+	# Ctrl+Space held down while opening: its auto-repeat must not type spaces in the field
+	if k.keycode == KEY_SPACE and k.echo and Time.get_ticks_msec() - _opened_msec < 800:
+		_search.accept_event()
+		return
+	if not k.pressed or k.echo:
+		return
+	if k.keycode == KEY_DOWN or k.keycode == KEY_ENTER or k.keycode == KEY_KP_ENTER:
+		if not _search_timer.is_stopped():
+			_search_timer.stop()
+			_refresh()
+		if _list.item_count > 0:
+			_list.grab_focus()
+			if _list.get_selected_items().is_empty():
+				_list.select(0)
+				_list.ensure_current_is_visible()
+				_on_selection_changed()
+			_search.accept_event()
 
 
 func close() -> void:
@@ -3105,7 +3204,7 @@ func _build_hint(base: Control) -> void:
 	var key_pad := _pad(6, 1)
 	key.add_child(key_pad)
 	var key_lbl := Label.new()
-	key_lbl.text = L.t("Ctrl+Espace")
+	key_lbl.text = Sc.label("open_drawer")
 	key_lbl.modulate = Color(1, 1, 1, 0.8)
 	key_lbl.add_theme_font_size_override("font_size", 11)
 	key_pad.add_child(key_lbl)
@@ -3462,6 +3561,23 @@ func _input(event: InputEvent) -> void:
 			_ctx_popup.hide()
 			get_viewport().set_input_as_handled()
 			return
+		elif _create_menu_open and event is InputEventKey and event.pressed and not (event as InputEventKey).echo:
+			var ck := (event as InputEventKey).keycode
+			var picked := 0
+			if ck == KEY_1 or ck == KEY_KP_1:
+				picked = 1
+			elif ck == KEY_2 or ck == KEY_KP_2:
+				picked = 2
+			elif ck == KEY_3 or ck == KEY_KP_3:
+				picked = 3
+			if picked > 0:
+				_ctx_popup.hide()
+				get_viewport().set_input_as_handled()
+				match picked:
+					1: _create_folder()
+					2: _create_scene()
+					3: _create_script()
+				return
 	# Mouse side buttons: back / forward (only over the drawer)
 	if is_open and event is InputEventMouseButton and event.pressed:
 		var xb := event as InputEventMouseButton
@@ -3485,37 +3601,42 @@ func _input(event: InputEvent) -> void:
 	var focus := get_viewport().gui_get_focus_owner()
 	if focus != null and not is_ancestor_of(focus):
 		return
-	if k.ctrl_pressed and k.keycode == KEY_F:
-		_search.grab_focus()
-		_search.select_all()
+	if Sc.matches(k, "focus_search"):
+		_focus_search()
 		get_viewport().set_input_as_handled()
 		return
+	# Shift+A: create menu (like Blender's Add menu). While typing in a text field it only
+	# triggers when the search bar is focused AND empty (an uppercase "A" as the very first
+	# letter of a search is rare), so it still works right after the drawer opens.
+	if Sc.matches(k, "create_menu"):
+		var typing := focus is LineEdit or focus is TextEdit
+		if not typing or (focus == _search and _search.text.is_empty()):
+			_show_create_menu()
+			get_viewport().set_input_as_handled()
+			return
 	if focus is LineEdit or focus is TextEdit:
 		return
 	# Actions on items: only if the list has focus (not the tree nor a button)
-	if focus != null and focus != _list and k.keycode != KEY_BACKSPACE:
+	if focus != null and focus != _list and not Sc.matches(k, "parent_folder"):
 		return
 	var sel := _selected_paths()
 	var handled := true
-	match k.keycode:
-		KEY_F2:
-			if sel.size() == 1:
-				_rename(sel[0])
-		KEY_DELETE:
-			if not sel.is_empty():
-				_confirm_delete(sel)
-		KEY_D:
-			if k.ctrl_pressed and not sel.is_empty():
-				_duplicate(sel)
-			else:
-				handled = false
-		KEY_BACKSPACE:
-			_go_up()
-		KEY_ENTER, KEY_KP_ENTER:
-			if sel.size() == 1:
-				_open_path(sel[0])
-		_:
-			handled = false
+	if Sc.matches(k, "rename"):
+		if sel.size() == 1:
+			_rename(sel[0])
+	elif Sc.matches(k, "delete"):
+		if not sel.is_empty():
+			_confirm_delete(sel)
+	elif Sc.matches(k, "duplicate"):
+		if not sel.is_empty():
+			_duplicate(sel)
+	elif Sc.matches(k, "parent_folder"):
+		_go_up()
+	elif Sc.matches(k, "open_item"):
+		if sel.size() == 1:
+			_open_path(sel[0])
+	else:
+		handled = false
 	if handled:
 		get_viewport().set_input_as_handled()
 
@@ -3938,7 +4059,7 @@ func try_paste_resource_at_mouse() -> bool:
 	var hovered: Control = vp.gui_get_hovered_control() if vp else null
 	var picker := _picker_under(hovered)
 	if picker == null:
-		_flash(L.t("Survolez un champ ressource de l'Inspecteur puis Alt+V"), true)
+		_flash(L.t("Survolez un champ ressource de l'Inspecteur puis %s") % Sc.label("paste_resource", "–"), true)
 		return false
 	if not picker.editable:
 		_flash(L.t("Ce champ n'est pas modifiable"), true)
@@ -4196,11 +4317,33 @@ func _add_color_row(target: String) -> void:
 	_ctx_vbox.add_child(row)
 
 
-func _show_context() -> void:
+## Small "Create" menu (Shift+A): new folder / scene / script, also reachable with keys 1 / 2 / 3.
+## Opens at the mouse, or in the middle of the drawer when the mouse is elsewhere.
+func _show_create_menu() -> void:
 	for c in _ctx_vbox.get_children():
 		_ctx_vbox.remove_child(c)
 		c.queue_free()
-	var sel := _selected_paths()
+	var title := Label.new()
+	title.text = L.t("Créer").to_upper()
+	title.modulate = TEXT_SECONDARY
+	title.add_theme_font_size_override("font_size", 10)
+	_ctx_vbox.add_child(title)
+	_ctx_btn(L.t("Nouveau dossier") + "   (1)", func() -> void: _create_folder(), Color.TRANSPARENT, "Folder")
+	_ctx_btn(L.t("Nouvelle scène") + "   (2)", func() -> void: _create_scene(), Color.TRANSPARENT, "PackedScene")
+	_ctx_btn(L.t("Nouveau script") + "   (3)", func() -> void: _create_script(), Color.TRANSPARENT, "ScriptCreate")
+	_place_ctx_popup()
+	_create_menu_open = true   # after _place_ctx_popup()
+	if not get_global_rect().has_point(get_global_mouse_position()):
+		_ctx_popup.position = get_global_rect().get_center() - _ctx_popup.size * 0.5
+
+
+func _show_context() -> void:
+	_create_menu_open = false
+	for c in _ctx_vbox.get_children():
+		_ctx_vbox.remove_child(c)
+		c.queue_free()
+	var sel := _ctx_sel_override if not _ctx_sel_override.is_empty() else _selected_paths()
+	_ctx_sel_override = PackedStringArray()
 	var on_item := not sel.is_empty()
 	var target := _context_path
 	var is_dir := DirAccess.dir_exists_absolute(target)
@@ -4284,9 +4427,12 @@ func _show_context() -> void:
 		_ctx_check(L.t("Afficher les éléments masqués"), _show_hidden, _set_show_hidden)
 		_ctx_sep()
 
-	_ctx_btn(L.t("Nouveau dossier"), _create_folder, Color.TRANSPARENT, "Folder")
-	_ctx_btn(L.t("Nouvelle scène"), _create_scene, Color.TRANSPARENT, "PackedScene")
-	_ctx_btn(L.t("Nouveau script"), _create_script, Color.TRANSPARENT, "Script")
+	# If the menu was opened on a single folder (list or tree), new items go inside it;
+	# otherwise they go in the current folder, exactly like before.
+	var new_item_dir := target if (on_item and single and is_dir) else current_dir
+	_ctx_btn(L.t("Nouveau dossier"), func() -> void: _create_folder(new_item_dir), Color.TRANSPARENT, "Folder")
+	_ctx_btn(L.t("Nouvelle scène"), func() -> void: _create_scene(new_item_dir), Color.TRANSPARENT, "PackedScene")
+	_ctx_btn(L.t("Nouveau script"), func() -> void: _create_script(new_item_dir), Color.TRANSPARENT, "Script")
 
 	if not on_item and _active_set.is_empty() and current_dir != "res://":
 		_ctx_sep()
@@ -4295,8 +4441,8 @@ func _show_context() -> void:
 	if on_item:
 		_ctx_sep()
 		if single:
-			_ctx_btn(L.t("Renommer (F2)"), func() -> void: _rename(target), Color.TRANSPARENT, "Rename")
-		_ctx_btn(L.t("Dupliquer (Ctrl+D)"), func() -> void: _duplicate(sel), Color.TRANSPARENT, "Duplicate")
+			_ctx_btn(Sc.with_hint(L.t("Renommer"), "rename"), func() -> void: _rename(target), Color.TRANSPARENT, "Rename")
+		_ctx_btn(Sc.with_hint(L.t("Dupliquer"), "duplicate"), func() -> void: _duplicate(sel), Color.TRANSPARENT, "Duplicate")
 		_ctx_btn(L.t("Retirer des favoris") if _is_fav(target) else L.t("Ajouter aux favoris"), func() -> void:
 			var was_fav := _is_fav(target)
 			for p in sel:
@@ -4352,7 +4498,7 @@ func _show_context() -> void:
 			_ctx_sep()
 			_add_color_row(target)
 		_ctx_sep()
-		_ctx_btn(L.t("Supprimer (Suppr)"), func() -> void: _confirm_delete(sel), COLOR_DANGER, "Remove")
+		_ctx_btn(Sc.with_hint(L.t("Supprimer"), "delete"), func() -> void: _confirm_delete(sel), COLOR_DANGER, "Remove")
 
 	_place_ctx_popup()
 	# PopupPanel is a Window (no "scale"/"modulate"): we animate its content instead.
@@ -4387,12 +4533,11 @@ func _scan() -> void:
 
 
 func _target_dir() -> String:
-	# If a folder is selected we create inside it, otherwise in the current folder
 	return current_dir
 
 
-func _create_folder() -> void:
-	var dir := _target_dir()
+func _create_folder(in_dir: String = "") -> void:
+	var dir := in_dir if not in_dir.is_empty() else _target_dir()
 	_prompt_string(L.t("Nouveau dossier"), _unique_path(dir, L.t("nouveau_dossier"), "").get_file(), func(n: String) -> void:
 		if not _valid_name(n):
 			return
@@ -4406,8 +4551,8 @@ func _create_folder() -> void:
 	)
 
 
-func _create_scene() -> void:
-	var dir := _target_dir()
+func _create_scene(in_dir: String = "") -> void:
+	var dir := in_dir if not in_dir.is_empty() else _target_dir()
 	_prompt_string(L.t("Nouvelle scène"), _unique_path(dir, L.t("nouvelle_scene"), ".tscn").get_file(), func(n: String) -> void:
 		if not _valid_name(n):
 			return
@@ -4475,8 +4620,8 @@ func _script_languages() -> Array:
 	return out
 
 
-func _create_script() -> void:
-	var dir := _target_dir()
+func _create_script(in_dir: String = "") -> void:
+	var dir := in_dir if not in_dir.is_empty() else _target_dir()
 	var langs := _script_languages()
 
 	var d := ConfirmationDialog.new()
@@ -4488,6 +4633,21 @@ func _create_script() -> void:
 	vb.custom_minimum_size.x = 340
 	vb.add_theme_constant_override("separation", 8)
 	d.add_child(vb)
+
+	# Name field FIRST: it holds the full file name with its extension ("player.gd", "rules.lua"...).
+	# Everything can be done from the keyboard; the dropdown below is only a shortcut.
+	var name_row := HBoxContainer.new()
+	name_row.add_theme_constant_override("separation", 8)
+	vb.add_child(name_row)
+	var name_lbl := Label.new()
+	name_lbl.text = L.t("Nom")
+	name_lbl.custom_minimum_size.x = 70
+	name_row.add_child(name_lbl)
+	var name_edit := LineEdit.new()
+	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_edit.tooltip_text = L.t("Tapez le nom complet avec son extension (ex. : player.lua)")
+	name_row.add_child(name_edit)
+	d.register_text_enter(name_edit)
 
 	var lang_row := HBoxContainer.new()
 	lang_row.add_theme_constant_override("separation", 8)
@@ -4502,6 +4662,8 @@ func _create_script() -> void:
 	# slot, even though they cannot be selected) and the real index in "langs": -1 for
 	# a separator, otherwise the index of the matching entry in "langs".
 	var entry_of_index: Array = []
+	var custom_index := -1
+	var first_selectable := -1
 	for i in langs.size():
 		var entry: Dictionary = langs[i]
 		if entry.has("sep"):
@@ -4510,63 +4672,87 @@ func _create_script() -> void:
 		else:
 			lang_opt.add_item(entry.name)
 			entry_of_index.append(i)
+			if first_selectable < 0:
+				first_selectable = entry_of_index.size() - 1
+			if str(entry.ext).is_empty():
+				custom_index = entry_of_index.size() - 1
 	lang_row.add_child(lang_opt)
 
-	var custom_row := HBoxContainer.new()
-	custom_row.add_theme_constant_override("separation", 8)
-	custom_row.visible = false
-	vb.add_child(custom_row)
-	var custom_lbl := Label.new()
-	custom_lbl.text = L.t("Extension")
-	custom_lbl.custom_minimum_size.x = 70
-	custom_row.add_child(custom_lbl)
-	var custom_edit := LineEdit.new()
-	custom_edit.placeholder_text = "txt"
-	custom_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	custom_row.add_child(custom_edit)
+	# "player.gd" -> ["player", "gd"]; no extension (or a trailing dot) -> [name, ""]
+	var split_name := func(full: String) -> Array:
+		var dot := full.rfind(".")
+		if dot <= 0 or dot == full.length() - 1:
+			return [full.trim_suffix("."), ""]
+		return [full.substr(0, dot), full.substr(dot + 1)]
 
-	var name_row := HBoxContainer.new()
-	name_row.add_theme_constant_override("separation", 8)
-	vb.add_child(name_row)
-	var name_lbl := Label.new()
-	name_lbl.text = L.t("Nom")
-	name_lbl.custom_minimum_size.x = 70
-	name_row.add_child(name_lbl)
-	var name_edit := LineEdit.new()
-	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	name_row.add_child(name_edit)
-	d.register_text_enter(name_edit)
-
-	# Preselects the last language used for this drawer, otherwise GDScript (first selectable
-	# item: we skip any category separator at the head of the list).
-	var start_idx := 0
+	# Preselects the last extension used (a preset language, or the custom extension typed last time).
+	var start_idx := -1
+	var initial_ext := _last_script_ext
 	for oi in entry_of_index.size():
 		var li: int = entry_of_index[oi]
-		if li >= 0:
+		if li >= 0 and not _last_script_ext.is_empty() and langs[li].ext == _last_script_ext:
 			start_idx = oi
-			if langs[li].ext == _last_script_ext:
-				break
+			break
+	if start_idx < 0:
+		if _last_script_ext.is_empty() or custom_index < 0:
+			start_idx = first_selectable
+			initial_ext = str(langs[entry_of_index[first_selectable]].ext)
+		else:
+			start_idx = custom_index   # custom extension remembered from last time
 	lang_opt.select(start_idx)
+	name_edit.text = _unique_path(dir, L.t("nouveau_script"), "." + initial_ext).get_file()
 
-	# The suggested name updates with the chosen language's extension, like the
-	# "Path" field of Godot's native dialog when the language changes.
-	var update_name := func() -> void:
+	# Dropdown changed: the typed base name is NEVER touched, only the extension changes, and the
+	# keyboard focus goes back to the name field so typing can continue right away.
+	lang_opt.item_selected.connect(func(_i: int) -> void:
 		var entry: Dictionary = langs[entry_of_index[lang_opt.selected]]
-		var is_custom: bool = entry.ext.is_empty()
-		custom_row.visible = is_custom
-		var ext: String = custom_edit.text.strip_edges().trim_prefix(".") if is_custom else entry.ext
-		var suffix := ("." + ext) if not ext.is_empty() else ""
-		name_edit.text = _unique_path(dir, L.t("nouveau_script"), suffix).get_file().get_basename()
-	lang_opt.item_selected.connect(func(_i: int) -> void: update_name.call())
-	custom_edit.text_changed.connect(func(_t: String) -> void: update_name.call())
-	update_name.call()
+		var parts: Array = split_name.call(name_edit.text.strip_edges())
+		var base: String = str(parts[0])
+		var cur_ext: String = str(parts[1]).to_lower()
+		var ext: String = str(entry.ext)
+		if ext.is_empty():
+			# "Custom...": the user types the extension. We keep one that is already custom,
+			# otherwise we leave "name." with the caret at the end, ready for the extension.
+			var cur_is_preset := cur_ext.is_empty()
+			for l in langs:
+				if l.has("ext") and str(l.ext) == cur_ext:
+					cur_is_preset = true
+					break
+			if cur_is_preset:
+				name_edit.text = base + "."
+		else:
+			name_edit.text = base + "." + ext
+		name_edit.grab_focus()
+		name_edit.deselect()
+		name_edit.caret_column = name_edit.text.length()
+	)
+	# Extension typed by hand: the dropdown follows (preset language, otherwise "Custom...").
+	name_edit.text_changed.connect(func(t: String) -> void:
+		var ext: String = str((split_name.call(t.strip_edges()) as Array)[1]).to_lower()
+		if ext.is_empty():
+			return
+		var target := custom_index
+		for oi in entry_of_index.size():
+			var li: int = entry_of_index[oi]
+			if li >= 0 and langs[li].ext == ext:
+				target = oi
+				break
+		if target >= 0 and lang_opt.selected != target:
+			lang_opt.select(target)
+	)
 
 	d.confirmed.connect(func() -> void:
 		var entry: Dictionary = langs[entry_of_index[lang_opt.selected]]
-		var is_custom: bool = entry.ext.is_empty()
-		var ext: String = (custom_edit.text.strip_edges().trim_prefix(".").to_lower()) if is_custom else entry.ext
-		var base_name := name_edit.text.strip_edges()
-		if base_name.is_empty() or ext.is_empty() or not _valid_name(base_name + "." + ext):
+		var parts: Array = split_name.call(name_edit.text.strip_edges())
+		var base_name: String = str(parts[0])
+		# Extension typed in the field wins; otherwise the dropdown's one.
+		var ext: String = str(parts[1]).to_lower()
+		if ext.is_empty():
+			ext = str(entry.ext)
+		if base_name.is_empty() or ext.is_empty():
+			_flash(L.t("Indiquez un nom et une extension (ex. : player.gd)"), true)
+			return
+		if not _valid_name(base_name + "." + ext):
 			return
 		if ext == "cs" and not _has_csharp_project():
 			_flash(L.t("Pas de solution C# dans ce projet : créez un premier script C# depuis le dock Fichiers de Godot (il générera le .csproj), puis réessayez ici"), true)
@@ -4582,7 +4768,7 @@ func _create_script() -> void:
 			return
 		f.store_string(_script_template(ext, base_name))
 		f.close()
-		_last_script_ext = ext
+		_last_script_ext = ext   # remembered for next time, preset or custom
 		_save_cfg()
 		_pending_select = p
 		_scan()
@@ -4594,9 +4780,10 @@ func _create_script() -> void:
 			d.queue_free()
 	)
 	EditorInterface.get_base_control().add_child(d)
-	d.popup_centered(Vector2i(380, 170))
+	d.popup_centered(Vector2i(380, 140))
 	name_edit.grab_focus()
-	name_edit.select_all()
+	# Select only the base name: typing replaces it and keeps ".ext"; End / arrows reach the extension
+	name_edit.select(0, name_edit.text.rfind("."))
 
 
 ## Initial content depending on the extension: GDScript, C# and shader have a template, the rest is empty.

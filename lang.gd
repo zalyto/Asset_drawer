@@ -6,8 +6,17 @@ extends RefCounted
 ## (and, failing a translation, the original text). The language is read once per session:
 ## changing the editor language requires restarting it anyway.
 
-
 const EN := {
+	"Dossier parent": "Parent folder",
+	"Rechercher...": "Search...",
+	"Rechercher dans tout le projet...": "Search the whole project...",
+	"Rechercher dans ce dossier...": "Search this folder...",
+	"Fermer": "Close",
+	"Dupliquer": "Duplicate",
+	"Puis survolez un champ ressource de l'Inspecteur (ex. Mesh d'un MeshInstance3D) : un bouton « Coller » apparaît (ou %s au clavier)": "Then hover a resource field in the Inspector (e.g. the Mesh of a MeshInstance3D): a “Paste” button appears (or press %s)",
+	"Survolez un champ ressource de l'Inspecteur puis %s": "Hover a resource field in the Inspector, then press %s",
+	"Tapez le nom complet avec son extension (ex. : player.lua)": "Type the full name with its extension (e.g. player.lua)",
+	"Indiquez un nom et une extension (ex. : player.gd)": "Enter a name and an extension (e.g. player.gd)",
 	"Scripts": "Scripts",
 	"Shader": "Shader",
 	"Fichiers texte": "Text files",
@@ -186,7 +195,7 @@ static func t(fr: String) -> String:
 	return str(EN.get(fr, fr))
 
 
-## Marque du pluriel "s" (français uniquement) pour les mots comme "sélectionné(s)".
+## Plural "s" marker (French only) for words like "sélectionné(s)".
 static func sel_s(plural: bool) -> String:
 	return "s" if plural and is_fr() else ""
 
