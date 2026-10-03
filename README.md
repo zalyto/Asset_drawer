@@ -13,24 +13,9 @@
 ![Asset Drawer](docs/screenshot.png)
 -->
 
----
 
-## Table of contents
 
-- [Why](#why)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Shortcuts](#shortcuts)
-- [Features](#features)
-- [Right-click menu](#right-click-menu)
-- [Copy / paste a resource](#copy--paste-a-resource)
-- [Export an image of the drawer](#export-an-image-of-the-drawer)
-- [Customization](#customization)
-- [Configuration files](#configuration-files)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
 
----
 
 ## Why
 
@@ -146,7 +131,6 @@ Drag one or more assets into the scene, the scene tree or Inspector fields, just
 - Add / remove the folder from favorites
 - Refresh
 - Switch to grid or list view
-- Export an image of the drawer (transparent PNG or green background)
 - New folder / scene / script
 - Folder color
 
@@ -156,14 +140,6 @@ Drag one or more assets into the scene, the scene tree or Inspector fields, just
 2. Hover a resource field in the Inspector (for example the `Mesh` of a `MeshInstance3D`): a **Paste** button appears.
 3. Click it, or use `Alt+V`. The drawer does not need to be open to paste.
 
-## Export an image of the drawer
-
-Handy for posters, renders or your own README. Right-click on empty space in the drawer:
-
-- **Export image (transparent PNG)**: the drawer is captured on black, then on white, and the opacity of each pixel is computed from the difference. Rounded corners and shadow come out clean, with no cutting out needed. It takes a few seconds to process.
-- **Export image (green background)**: the drawer on pure green (0, 255, 0), to key out with a chroma key.
-
-The image is saved to your Pictures folder and the file manager opens on it. Floating widgets (Copy / Paste buttons, notifications, hint pill) are hidden during the capture.
 
 ## Customization
 
