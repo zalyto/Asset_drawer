@@ -3969,6 +3969,10 @@ func _ctx_btn(title: String, callback: Callable, color: Color = Color.TRANSPAREN
 
 
 func _ctx_sep() -> void:
+	# No separator at the very top, and never two in a row
+	var n := _ctx_vbox.get_child_count()
+	if n == 0 or _ctx_vbox.get_child(n - 1) is HSeparator:
+		return
 	_ctx_vbox.add_child(HSeparator.new())
 
 
@@ -4348,6 +4352,19 @@ func _show_context() -> void:
 	var target := _context_path
 	var is_dir := DirAccess.dir_exists_absolute(target)
 	var single := sel.size() == 1
+	# res:// itself (right-click on the tree root): it can be browsed and filled, but never
+	# renamed, duplicated, deleted or hidden.
+	var is_root := on_item and single and target.trim_suffix("/") in ["res:", "res:/"]
+
+	# The most common operations come first. If the menu was opened on a single folder
+	# (list or tree), new items go inside it; otherwise in the current folder.
+	var new_item_dir := target if (on_item and single and is_dir) else current_dir
+	if new_item_dir == "res:" or new_item_dir == "res:/":
+		new_item_dir = "res://"
+	_ctx_btn(L.t("Nouveau dossier"), func() -> void: _create_folder(new_item_dir), Color.TRANSPARENT, "Folder")
+	_ctx_btn(L.t("Nouvelle scène"), func() -> void: _create_scene(new_item_dir), Color.TRANSPARENT, "PackedScene")
+	_ctx_btn(L.t("Nouveau script"), func() -> void: _create_script(new_item_dir), Color.TRANSPARENT, "Script")
+	_ctx_sep()
 
 	if on_item:
 		if single:
@@ -4427,18 +4444,11 @@ func _show_context() -> void:
 		_ctx_check(L.t("Afficher les éléments masqués"), _show_hidden, _set_show_hidden)
 		_ctx_sep()
 
-	# If the menu was opened on a single folder (list or tree), new items go inside it;
-	# otherwise they go in the current folder, exactly like before.
-	var new_item_dir := target if (on_item and single and is_dir) else current_dir
-	_ctx_btn(L.t("Nouveau dossier"), func() -> void: _create_folder(new_item_dir), Color.TRANSPARENT, "Folder")
-	_ctx_btn(L.t("Nouvelle scène"), func() -> void: _create_scene(new_item_dir), Color.TRANSPARENT, "PackedScene")
-	_ctx_btn(L.t("Nouveau script"), func() -> void: _create_script(new_item_dir), Color.TRANSPARENT, "Script")
-
 	if not on_item and _active_set.is_empty() and current_dir != "res://":
 		_ctx_sep()
 		_add_color_row(current_dir)
 
-	if on_item:
+	if on_item and not is_root:
 		_ctx_sep()
 		if single:
 			_ctx_btn(Sc.with_hint(L.t("Renommer"), "rename"), func() -> void: _rename(target), Color.TRANSPARENT, "Rename")
@@ -4499,6 +4509,13 @@ func _show_context() -> void:
 			_add_color_row(target)
 		_ctx_sep()
 		_ctx_btn(Sc.with_hint(L.t("Supprimer"), "delete"), func() -> void: _confirm_delete(sel), COLOR_DANGER, "Remove")
+
+	# No dangling separator at the bottom of the menu
+	var last_i := _ctx_vbox.get_child_count() - 1
+	if last_i >= 0 and _ctx_vbox.get_child(last_i) is HSeparator:
+		var tail := _ctx_vbox.get_child(last_i)
+		_ctx_vbox.remove_child(tail)
+		tail.queue_free()
 
 	_place_ctx_popup()
 	# PopupPanel is a Window (no "scale"/"modulate"): we animate its content instead.
@@ -4810,7 +4827,14 @@ func _script_template(ext: String, base_name: String) -> String:
 	return ""
 
 
+## True for the project root itself ("res://", "res:/" or "res:"): never renamed, copied or deleted.
+func _is_project_root(p: String) -> bool:
+	return p.trim_suffix("/") in ["res:", "res:/", ""]
+
+
 func _rename(path: String) -> void:
+	if _is_project_root(path):
+		return
 	var src := path.trim_suffix("/")
 	_prompt_string(L.t("Renommer"), src.get_file(), func(n: String) -> void:
 		if not _valid_name(n):
@@ -4842,6 +4866,8 @@ func _rename(path: String) -> void:
 func _duplicate(paths: PackedStringArray) -> void:
 	var last := ""
 	for p in paths:
+		if _is_project_root(p):
+			continue
 		var src := p.trim_suffix("/")
 		var dir := src.get_base_dir()
 		if DirAccess.dir_exists_absolute(src):
@@ -4885,7 +4911,13 @@ func _copy_file(src: String, dst: String) -> void:
 					f.close()
 
 
-func _confirm_delete(paths: PackedStringArray) -> void:
+func _confirm_delete(all_paths: PackedStringArray) -> void:
+	var paths := PackedStringArray()
+	for p in all_paths:
+		if not _is_project_root(p):
+			paths.append(p)
+	if paths.is_empty():
+		return
 	var names: PackedStringArray = []
 	for p in paths:
 		names.append(p.trim_suffix("/").get_file())
