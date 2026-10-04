@@ -8,6 +8,13 @@ extends RefCounted
 
 const EN := {
 	"Dossier parent": "Parent folder",
+	"élément": "item",
+	"éléments": "items",
+	"replié": "collapsed",
+	"Cliquer pour déplier": "Click to expand",
+	"Replier tous les groupes": "Collapse all groups",
+	"Déplier tous les groupes": "Expand all groups",
+	" · %d groupe(s) replié(s)": " · %d group(s) collapsed",
 	"Rechercher...": "Search...",
 	"Rechercher dans tout le projet...": "Search the whole project...",
 	"Rechercher dans ce dossier...": "Search this folder...",
@@ -178,6 +185,7 @@ const EN := {
 	"Ne plus masquer": "Unhide",
 	"Afficher dans son dossier": "Show in its folder",
 	"Impossible de créer « %s »": "Can't create “%s”",
+	"Dossier introuvable : « %s »": "Folder not found: “%s”",
 }
 
 static var _fr := -1

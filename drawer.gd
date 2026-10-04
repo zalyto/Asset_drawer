@@ -142,6 +142,15 @@ var _center_tween: Tween
 var _tab_list: ItemList
 var _btn_new_set: Button
 var _breadcrumbs: HBoxContainer
+var _path_bar_panel: PanelContainer   # shared container for the breadcrumbs and the editable path field
+var _path_edit: LineEdit
+var _path_ghost: Label                # dimmed inline completion drawn right after the caret
+var _path_suggest: PanelContainer     # dropdown of matching subfolders
+var _path_suggest_list: VBoxContainer
+var _path_suggest_paths: PackedStringArray = []
+var _path_suggest_sel := -1
+var _path_suggest_nav := false      # the user moved in the dropdown with Up / Down
+var _path_edit_active := false
 var _search: LineEdit
 var _zoom: HSlider
 var _list: ItemList
@@ -219,6 +228,35 @@ var _dirty := true
 var _tree_dirty := true
 var _save_dirty := false
 var _truncated := false
+# Search results grouped by folder (when they come from several folders)
+const GROUP_GAP := 36            # vertical space between rows in grouped mode (path tab + clear gap between boxes)
+const GROUP_PAD := 5.0           # padding of a group box around its items
+const GROUP_RADIUS := 10         # corner radius of the boxes
+const GROUP_H_GAP := 26          # horizontal space between columns (and between two boxes on the same row)
+const GROUP_TAB_H := 17.0        # height of the path tab above each group
+var _groups: Array = []          # [{folder, first, last, color, parts}]
+var _grouped := false
+var _group_styled := false       # the list's own selection/hover styles are disabled (grouped mode)
+var _gh_idx := -1                # item under the mouse in grouped mode (hover drawn in the box)
+var _label_cache := {}
+var _group_common := 0           # number of leading path segments shared by ALL groups (shown as "…")
+var _group_bg: Control           # drawn BEHIND the list (same area), so thumbnails stay untinted
+# Folding of the groups: a folded group keeps ONE placeholder item (its cell shows the item count).
+const GROUP_STUB := "group://"   # metadata of a placeholder item (never a real path)
+var _collapsed_groups := {}      # folder -> true. Kept while the search text is not empty
+var _group_tabs: Array = []      # [[Rect2, folder]] clickable path tabs, rebuilt by _draw_groups
+var _gh_tab := ""                # folder of the tab under the mouse
+var _stub_count := 0             # number of placeholder items currently in the list
+var _blank_tex: ImageTexture     # transparent icon of the placeholders
+# Animations of the groups (all values 0..1; a missing key means "at rest")
+const FOLD_OUT_TIME := 0.12      # content fades out + arrow turns
+const FOLD_IN_TIME := 0.2        # new content fades in
+const TAB_HOVER_TIME := 0.12     # tab color when the mouse enters / leaves
+var _fold_t := {}                # folder -> arrow openness (0 = folded / pointing right, 1 = open / pointing down)
+var _content_t := {}             # folder -> visibility of the group's content (a cover of the box color fades)
+var _tab_hl := {}                # folder -> hover amount of its path tab
+var _tab_tw := {}                # folder -> running hover Tween
+var _fold_busy_msec := 0         # no new fold while an animation is running (with a safety timeout)
 var _icon_bucket := 0
 var _search_timer: Timer
 var _opened_msec := 0
@@ -616,7 +654,25 @@ func _build_ui() -> void:
 	_style_item_list(_list)
 	_list.resized.connect(_schedule_previews)
 	_list.get_v_scroll_bar().value_changed.connect(func(_v: float) -> void: _schedule_previews())
+	# Group boxes are drawn on a sibling placed BEHIND the list (the list background is transparent)
+	_group_bg = Control.new()
+	_group_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Boxes of partly visible groups extend beyond the list while scrolling: without clipping they
+	# were drawn over the header, the status bar and the rest of the editor.
+	_group_bg.clip_contents = true
+	_group_bg.draw.connect(_draw_groups)
+	center_pad.add_child(_group_bg)
 	center_pad.add_child(_list)
+	_list.get_v_scroll_bar().value_changed.connect(func(_v: float) -> void: _group_bg.queue_redraw())
+	_list.resized.connect(func() -> void: _group_bg.queue_redraw())
+	_list.gui_input.connect(_on_list_hover_groups)
+	_list.mouse_exited.connect(func() -> void:
+		if _gh_idx != -1 or _gh_tab != "":
+			_tab_hover_to(_gh_tab, 0.0)
+			_gh_idx = -1
+			_gh_tab = ""
+			_group_bg.queue_redraw()
+	)
 
 	_empty_state = VBoxContainer.new()
 	_empty_state.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -728,6 +784,7 @@ func _build_paste_pop() -> void:
 	_toast_overlay.add_child(_paste_pop)
 
 	_build_copy_pop()
+	_build_path_suggest()
 
 
 ## Small floating "Copy" button (icon only, same green as "Paste") that appears when
@@ -758,6 +815,38 @@ func _build_copy_pop() -> void:
 	_copy_pop.pressed.connect(_on_copy_pop_pressed)
 	_add_press_bounce(_copy_pop, 1.12, 0.88)
 	_toast_overlay.add_child(_copy_pop)
+
+
+## Overlays for the editable path bar: a dimmed inline completion glued to the caret,
+## and a dropdown listing the matching subfolders (built once, shown/hidden as needed).
+func _build_path_suggest() -> void:
+	# A plain Label showing only the completion suffix: placed after the measured width of the typed
+	# text and given the LineEdit's own font / size, so it matches it exactly (a RichTextLabel did not).
+	_path_ghost = Label.new()
+	_path_ghost.visible = false
+	_path_ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_path_ghost.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	# The editor theme gives Label a stylebox with horizontal margins: that was the gap before the ghost.
+	_path_ghost.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	_path_ghost.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_path_ghost.z_index = 205  # above the drawer panel (128), like the paste/copy popups (200)
+	_toast_overlay.add_child(_path_ghost)
+
+	_path_suggest = PanelContainer.new()
+	_path_suggest.visible = false
+	_path_suggest.mouse_filter = Control.MOUSE_FILTER_STOP
+	_path_suggest.z_index = 210
+	var sug_style := _make_stylebox(COLOR_HEADER, COLOR_BORDER, 8, 1)
+	sug_style.shadow_color = Color(0, 0, 0, 0.5)
+	sug_style.shadow_size = 8
+	sug_style.shadow_offset = Vector2(0, 3)
+	_path_suggest.add_theme_stylebox_override("panel", sug_style)
+	var sug_pad := _pad(4, 4)
+	_path_suggest.add_child(sug_pad)
+	_path_suggest_list = VBoxContainer.new()
+	_path_suggest_list.add_theme_constant_override("separation", 1)
+	sug_pad.add_child(_path_suggest_list)
+	_toast_overlay.add_child(_path_suggest)
 
 
 func _build_toast() -> void:
@@ -826,11 +915,36 @@ func _build_toolbar() -> Control:
 	_btn_up.pressed.connect(_go_up)
 	nav_row.add_child(_btn_up)
 
-	# 2) Breadcrumb
+	# 2) Breadcrumb / editable path: click an empty area of the bar to type a path,
+	# with inline ghost completion and a dropdown of matching subfolders (see _enter_path_edit_mode).
+	_path_bar_panel = PanelContainer.new()
+	_path_bar_panel.custom_minimum_size = Vector2(0, BAR_H)
+	_path_bar_panel.add_theme_stylebox_override("panel", _topbar_stylebox())
+	_path_bar_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_path_bar_panel.mouse_filter = Control.MOUSE_FILTER_PASS
+	_path_bar_panel.gui_input.connect(_on_path_bar_gui_input)
+	var crumb_pad := _pad(3, 2)
+	_path_bar_panel.add_child(crumb_pad)
+
 	_breadcrumbs = HBoxContainer.new()
 	_breadcrumbs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_breadcrumbs.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_breadcrumbs.clip_contents = true
-	row.add_child(_bar_panel(_breadcrumbs, true))
+	crumb_pad.add_child(_breadcrumbs)
+
+	_path_edit = LineEdit.new()
+	_path_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_path_edit.visible = false
+	_path_edit.context_menu_enabled = true
+	_path_edit.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	_path_edit.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	_path_edit.add_theme_font_size_override("font_size", 12)
+	_path_edit.text_changed.connect(_on_path_edit_changed)
+	_path_edit.text_submitted.connect(_on_path_edit_submitted)
+	_path_edit.gui_input.connect(_on_path_edit_gui_input)
+	crumb_pad.add_child(_path_edit)
+
+	row.add_child(_path_bar_panel)
 
 	# 3) Search: same background / outline as the containers
 	_search = LineEdit.new()
@@ -1094,7 +1208,7 @@ func _build_details_panel() -> PanelContainer:
 	_btn_open.add_theme_stylebox_override("hover", _make_stylebox(_hover_c(accent), Color.TRANSPARENT, 4))
 	_btn_open.add_theme_stylebox_override("pressed", _make_stylebox(_press_c(accent), Color.TRANSPARENT, 4))
 	_tint_btn_icon(_btn_open, Color.WHITE)
-	_btn_open.pressed.connect(func() -> void: _open_path(_context_path))
+	_btn_open.pressed.connect(_on_open_pressed)
 	_details_btn_box.add_child(_btn_open)
 
 	_btn_copy_res = _detail_btn("ActionCopy,Duplicate", L.t("Copier la ressource"),
@@ -1789,23 +1903,71 @@ func _refresh() -> void:
 	else:
 		_search_entries(tokens, entries)
 
-	entries.sort_custom(func(a: Array, b: Array) -> bool:
-		# entry = [path, type, is_folder, name, rank]  (rank: 0 exact name, 1 starts with, 2 contains)
-		var ra: int = a[4] if a.size() > 4 else 0
-		var rb: int = b[4] if b.size() > 4 else 0
-		if ra != rb:
-			return ra < rb
-		if a[2] != b[2]:
-			return a[2]
-		return str(a[3]).naturalnocasecmp_to(str(b[3])) < 0
-	)
+	# Search across several folders: results are grouped by folder (one box per folder).
+	var group_search := not query.is_empty() and _active_set.is_empty()
+	var folder_rank := {}
+	if group_search:
+		for e in entries:
+			var f := str(e[0]).trim_suffix("/").get_base_dir()
+			var rk: int = e[4] if e.size() > 4 else 0
+			if not folder_rank.has(f) or rk < int(folder_rank[f]):
+				folder_rank[f] = rk
+	_grouped = group_search and folder_rank.size() > 1
+	if _grouped:
+		entries.sort_custom(func(a: Array, b: Array) -> bool:
+			var fa := str(a[0]).trim_suffix("/").get_base_dir()
+			var fb := str(b[0]).trim_suffix("/").get_base_dir()
+			if fa != fb:
+				var ga: int = folder_rank[fa]
+				var gb: int = folder_rank[fb]
+				if ga != gb:
+					return ga < gb
+				return fa.naturalnocasecmp_to(fb) < 0
+			if a[2] != b[2]:
+				return a[2]
+			var ra: int = a[4] if a.size() > 4 else 0
+			var rb: int = b[4] if b.size() > 4 else 0
+			if ra != rb:
+				return ra < rb
+			return str(a[3]).naturalnocasecmp_to(str(b[3])) < 0
+		)
+	else:
+		entries.sort_custom(func(a: Array, b: Array) -> bool:
+			# entry = [path, type, is_folder, name, rank]  (rank: 0 exact name, 1 starts with, 2 contains)
+			var ra: int = a[4] if a.size() > 4 else 0
+			var rb: int = b[4] if b.size() > 4 else 0
+			if ra != rb:
+				return ra < rb
+			if a[2] != b[2]:
+				return a[2]
+			return str(a[3]).naturalnocasecmp_to(str(b[3])) < 0
+		)
 	_truncated = entries.size() > MAX_ITEMS
 	if _truncated:
 		entries.resize(MAX_ITEMS)
 
 	var custom_colors := _colors()
 	var folder_tex := _get_hd_folder_icon(_icon_bucket)
-	var show_parent := not query.is_empty() and _active_set.is_empty()
+	var lab_font := _list.get_theme_font("font")
+	var lab_fs := _list.get_theme_font_size("font_size")
+	var show_parent := not query.is_empty() and _active_set.is_empty() and not _grouped
+	_groups.clear()
+	_stub_count = 0
+	_set_group_layout(_grouped)
+	if not _grouped:
+		_gh_tab = ""
+		_tab_hl.clear()
+		_list.mouse_default_cursor_shape = Control.CURSOR_ARROW
+	if query.is_empty():
+		_collapsed_groups.clear()   # leaving the search: every group starts unfolded next time
+	if _pending_select != "":
+		# A newly created / renamed item must be visible: unfold the group it belongs to
+		_collapsed_groups.erase(_pending_select.trim_suffix("/").get_base_dir())
+	var group_counts := {}
+	if _grouped:
+		for e in entries:
+			var gf := str(e[0]).trim_suffix("/").get_base_dir()
+			group_counts[gf] = int(group_counts.get(gf, 0)) + 1
 	var check_hidden := _show_hidden and not _hidden.is_empty()
 	for e in entries:
 		var path: String = e[0]
@@ -1819,6 +1981,24 @@ func _refresh() -> void:
 			if parent.is_empty():
 				parent = "res://"
 			label += ("  ·  " + parent) if _view_list else ("\n" + parent)
+		if _grouped:
+			var gfolder := path.trim_suffix("/").get_base_dir()
+			if _groups.is_empty() or _groups[_groups.size() - 1].folder != gfolder:
+				var gcount := int(group_counts.get(gfolder, 1))
+				var folded := _collapsed_groups.has(gfolder) and gcount > 1   # a single item is never folded
+				_groups.append({"folder": gfolder, "first": _list.item_count, "last": _list.item_count,
+					"color": _folder_color(custom_colors, gfolder), "parts": _path_parts(gfolder, custom_colors),
+					"count": gcount, "folded": folded})
+				if folded:
+					var stub := _add_group_stub(gfolder, gcount, lab_font, lab_fs)
+					_groups[_groups.size() - 1].first = stub
+					_groups[_groups.size() - 1].last = stub
+			if _groups[_groups.size() - 1].folded:
+				continue   # folded group: only its placeholder is shown
+		if _grouped and not _view_list:
+			# Every label takes exactly 2 lines, whatever the name: all the items (and therefore all
+			# the boxes) get the same height instead of depending on the length of the name.
+			label = _two_line_label(label, float(_list.fixed_column_width), lab_font, lab_fs)
 		var idx: int
 		if is_dir:
 			idx = _list.add_item(label, folder_tex)
@@ -1836,13 +2016,17 @@ func _refresh() -> void:
 				_list.set_item_icon_modulate(idx, Color(1, 1, 1, HIDDEN_ALPHA))
 		_list.set_item_metadata(idx, path)
 		_list.set_item_tooltip(idx, path + (("\n" + L.t("Masqué dans le tiroir")) if is_hid else ""))
+		if _grouped:
+			_groups[_groups.size() - 1].last = idx
 		_path_index[path] = idx
 		_item_colors.append(Color(0, 0, 0, 0) if is_dir else _type_color(path, type))
 		if _is_fav(path):
 			_list.set_item_custom_fg_color(idx, COLOR_FAV)
 		if is_hid:
 			_list.set_item_custom_fg_color(idx, Color(1, 1, 1, HIDDEN_ALPHA))
+	_group_common = _compute_common_segments()
 	var shown := _list.item_count
+	_redraw_groups_soon()
 
 	# Restore the selection (or select the newly created item)
 	var reselect := prev_selected
@@ -1876,12 +2060,514 @@ func _refresh() -> void:
 	_schedule_previews()
 
 
+## Placeholder shown in place of the items of a folded group: a cell with a transparent icon
+## (the item count is drawn on it by _draw_groups) that cannot be selected.
+func _add_group_stub(folder: String, count: int, font: Font, fs: int) -> int:
+	if _blank_tex == null:
+		var img := Image.create(2, 2, false, Image.FORMAT_RGBA8)
+		img.fill(Color(0, 0, 0, 0))
+		_blank_tex = ImageTexture.create_from_image(img)
+	var word := L.t("élément") if count == 1 else L.t("éléments")
+	var label := word
+	if _view_list:
+		label = "%d %s  ·  %s" % [count, word, L.t("replié")]
+	else:
+		label = _two_line_label(word, float(_list.fixed_column_width), font, fs)
+	var idx := _list.add_item(label, _blank_tex)
+	_list.set_item_selectable(idx, false)
+	_list.set_item_metadata(idx, GROUP_STUB + folder)
+	_list.set_item_tooltip(idx, L.t("Cliquer pour déplier") + "\n" + folder)
+	_list.set_item_custom_fg_color(idx, TEXT_SECONDARY)
+	_item_colors.append(Color(0, 0, 0, 0))
+	_stub_count += 1
+	return idx
+
+
+func _is_stub_idx(i: int) -> bool:
+	return i >= 0 and i < _list.item_count and str(_list.get_item_metadata(i)).begins_with(GROUP_STUB)
+
+
+## Folder of the path tab under `pos` (list coordinates), "" if none.
+func _tab_at(pos: Vector2) -> String:
+	for t in _group_tabs:
+		if (t[0] as Rect2).has_point(pos):
+			return str(t[1])
+	return ""
+
+
+## Folds / unfolds one group (Shift: all of them). Single-item groups are never folded.
+func _toggle_group(folder: String, all_groups: bool = false) -> void:
+	var fold := not _collapsed_groups.has(folder)
+	if all_groups:
+		_set_all_groups_folded(fold)
+		return
+	for g in _groups:
+		if g.folder == folder:
+			if int(g.count) <= 1:
+				return   # nothing to fold
+			_fold_groups([folder], fold, folder)
+			return
+
+
+func _set_all_groups_folded(fold: bool) -> void:
+	var targets: Array = []
+	for g in _groups:
+		if int(g.count) > 1 and bool(g.folded) != fold:
+			targets.append(g.folder)
+	_fold_groups(targets, fold, "", not fold)
+
+
+func _anim_redraw() -> void:
+	if is_instance_valid(_group_bg):
+		_group_bg.queue_redraw()
+	if is_instance_valid(_list):
+		_list.queue_redraw()
+
+
+## Folds / unfolds groups with a short animation: the content fades out (the arrow turns), the
+## list is rebuilt, then the new content fades in. `anchor` is the group whose tab keeps its place
+## on screen (the list is rebuilt, so the scroll position is restored relative to it).
+func _fold_groups(folders: Array, fold: bool, anchor: String, clear_all: bool = false) -> void:
+	if Time.get_ticks_msec() < _fold_busy_msec:
+		return   # an animation is already running
+	if folders.is_empty():
+		if clear_all and not _collapsed_groups.is_empty():
+			_collapsed_groups.clear()
+		return
+	_fold_busy_msec = Time.get_ticks_msec() + int((FOLD_OUT_TIME + FOLD_IN_TIME) * 1000.0) + 250
+	var view_y := -99999.0
+	for g in _groups:
+		if g.folder == anchor:
+			view_y = _cell_rect(int(g.first)).position.y
+			break
+	# 1) Folding: the content fades out first
+	if fold:
+		var out := create_tween()
+		out.tween_method(func(v: float) -> void:
+			for f in folders:
+				_fold_t[f] = v
+				_content_t[f] = v
+			_anim_redraw()
+		, 1.0, 0.0, FOLD_OUT_TIME).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		await out.finished
+	# 2) Rebuild the list. The new content starts invisible (arrow at its starting position).
+	for f in folders:
+		if fold:
+			_collapsed_groups[f] = true
+		else:
+			_collapsed_groups.erase(f)
+		_content_t[f] = 0.0
+		_fold_t[f] = 0.0
+	if clear_all:
+		_collapsed_groups.clear()
+	_refresh()
+	if view_y > -90000.0:
+		await get_tree().process_frame
+		if _grouped:
+			if _list.has_method("force_update_list_size"):
+				_list.call("force_update_list_size")
+			for g in _groups:
+				if g.folder == anchor:
+					_list.get_v_scroll_bar().value += _cell_rect(int(g.first)).position.y - view_y
+					break
+	# 3) The new content (folded placeholder or items) fades in; unfolding also turns the arrow
+	var inn := create_tween()
+	inn.tween_method(func(v: float) -> void:
+		for f in folders:
+			_content_t[f] = v
+			if not fold:
+				_fold_t[f] = v
+		_anim_redraw()
+	, 0.0, 1.0, FOLD_IN_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	await inn.finished
+	for f in folders:
+		_content_t.erase(f)
+		_fold_t.erase(f)
+	_fold_busy_msec = 0
+	_anim_redraw()
+
+
+## Smooth hover color of a path tab (value in _tab_hl, read by _draw_groups).
+func _tab_hover_to(folder: String, target: float) -> void:
+	if folder == "":
+		return
+	if _tab_tw.has(folder) and (_tab_tw[folder] as Tween).is_valid():
+		(_tab_tw[folder] as Tween).kill()
+	var from: float = _tab_hl.get(folder, 0.0)
+	if is_equal_approx(from, target):
+		return
+	var tw := create_tween()
+	_tab_tw[folder] = tw
+	tw.tween_method(func(v: float) -> void:
+		_tab_hl[folder] = v
+		if is_instance_valid(_group_bg):
+			_group_bg.queue_redraw()
+	, from, target, TAB_HOVER_TIME)
+	if target <= 0.0:
+		tw.finished.connect(func() -> void: _tab_hl.erase(folder))
+
+
+## Number of leading folders (after res://) that every group has in common: they say nothing about
+## where a result lives, so the path tabs fold them into "…" and keep the folders that differ.
+func _compute_common_segments() -> int:
+	if _groups.size() < 2:
+		return 0
+	var first_parts: Array = _groups[0].parts
+	var n := first_parts.size()
+	for g in _groups:
+		var parts: Array = g.parts
+		n = mini(n, parts.size())
+		for k in n:
+			if str(parts[k].name) != str(first_parts[k].name):
+				n = k
+				break
+	return n
+
+
+## The list lays itself out a frame or two after items are added: redraw the boxes right away,
+## then again once the layout has settled.
+func _redraw_groups_soon() -> void:
+	_group_bg.queue_redraw()
+	if not _grouped:
+		return
+	await get_tree().process_frame
+	if is_instance_valid(_group_bg):
+		_group_bg.queue_redraw()
+	await get_tree().create_timer(0.12).timeout
+	if is_instance_valid(_group_bg):
+		_group_bg.queue_redraw()
+
+
+## Grouped mode: more room between rows for the path tabs, a bit more between columns, and a top
+## margin so the first tab is not clipped. Back to the normal layout otherwise.
+func _set_group_layout(on: bool) -> void:
+	# The list's own selection / hover / cursor boxes cover the whole cell INCLUDING the (large)
+	# separations of the grouped layout, i.e. the neighbouring boxes and the path tab. In grouped
+	# mode they are disabled and the highlight is drawn inside the box instead (see _draw_groups).
+	if on and not _group_styled:
+		_group_styled = true
+		var none := StyleBoxEmpty.new()
+		for n in ["selected", "selected_focus", "cursor", "cursor_unfocused", "hovered", "hovered_selected", "hovered_selected_focus"]:
+			_list.add_theme_stylebox_override(n, none)
+	elif not on and _group_styled:
+		_group_styled = false
+		_style_item_list(_list)
+	if on:
+		_list.add_theme_constant_override("v_separation", GROUP_GAP)
+		_list.add_theme_constant_override("h_separation", GROUP_H_GAP)
+		var sb := StyleBoxEmpty.new()
+		sb.content_margin_top = GROUP_TAB_H + 8.0
+		sb.content_margin_left = 6.0
+		sb.content_margin_right = 6.0
+		_list.add_theme_stylebox_override("panel", sb)
+	else:
+		_list.remove_theme_constant_override("v_separation")
+		_list.remove_theme_constant_override("h_separation")
+		_list.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+
+
+## "res://Component/combat/Stats" -> [{name: "Component", color}, {name: "combat", color}, {name: "Stats", color}]
+## Each segment carries the (inherited) color of its own folder, so the path reads as a colored trail.
+func _path_parts(folder: String, colors: Dictionary) -> Array:
+	var rel := folder.trim_prefix("res://").trim_suffix("/")
+	var out: Array = []
+	if rel.is_empty():
+		return [{"name": "res://", "color": _folder_color(colors, "res://")}]
+	var acc := "res://"
+	for seg in rel.split("/", false):
+		acc = acc.path_join(seg)
+		out.append({"name": seg, "color": _folder_color(colors, acc)})
+	return out
+
+
+## True when two row boxes share some columns (so the group is continuous between them).
+func _x_overlap(a: Rect2, b: Rect2) -> bool:
+	return minf(a.end.x, b.end.x) - maxf(a.position.x, b.position.x) > 2.0
+
+
+## Rounds the inner (concave) corners where a row joins the row above it and one of them is
+## wider: the join between the two rows would otherwise end in a sharp 90 degree notch.
+func _draw_group_fillets(prv: Rect2, cur: Rect2, fill: Color) -> void:
+	var gap := cur.position.y - prv.end.y
+	var r := minf(float(GROUP_RADIUS), maxf(gap * 0.9, 2.0))
+	# Left side
+	if prv.position.x < cur.position.x - 1.0:
+		_draw_fillet(Vector2(cur.position.x, prv.end.y), -1.0, 1.0, r, fill)       # above row wider
+	elif cur.position.x < prv.position.x - 1.0:
+		_draw_fillet(Vector2(prv.position.x, cur.position.y), -1.0, -1.0, r, fill)  # below row wider
+	# Right side
+	if prv.end.x > cur.end.x + 1.0:
+		_draw_fillet(Vector2(cur.end.x, prv.end.y), 1.0, 1.0, r, fill)
+	elif cur.end.x > prv.end.x + 1.0:
+		_draw_fillet(Vector2(prv.end.x, cur.position.y), 1.0, -1.0, r, fill)
+
+
+## Concave corner at `c`: fills the square of side `r` that extends from `c` in the direction
+## (sx, sy), minus the quarter circle centered at c + (sx, sy) * r.
+func _draw_fillet(c: Vector2, sx: float, sy: float, r: float, col: Color) -> void:
+	var o := c + Vector2(sx * r, sy * r)
+	var pts := PackedVector2Array([c])
+	var arc := PackedVector2Array()
+	for k in 9:
+		var phi := float(k) / 8.0 * PI * 0.5
+		arc.append(o + Vector2(-sx * cos(phi), -sy * sin(phi)) * r)
+	pts.append_array(arc)
+	_group_bg.draw_colored_polygon(pts, col)
+	_group_bg.draw_polyline(arc, col, 1.0, true)   # smooths the edge of the arc
+
+
+## The real cell of an item (what its content is centered in), without the separations.
+## ItemList.get_item_rect() includes half of the separation on each side of the cell: vertically
+## it is trimmed, and horizontally the cell is centered on the center of the rect (taken with
+## expand = false: with true the last column is stretched to the list width, which moved it).
+func _cell_rect(i: int) -> Rect2:
+	var vsep := float(_list.get_theme_constant("v_separation"))
+	var r := _item_rect(i, true)
+	r.position.y += vsep * 0.5
+	r.size.y = maxf(r.size.y - vsep, 8.0)
+	if not _view_list and _list.fixed_column_width > 0:
+		var rc := _item_rect(i, false)
+		var cw := float(_list.fixed_column_width)
+		r.position.x = rc.position.x + rc.size.x * 0.5 - cw * 0.5
+		r.size.x = cw
+	return r
+
+
+func _on_list_hover_groups(event: InputEvent) -> void:
+	if not _grouped or not (event is InputEventMouseMotion):
+		return
+	var pos: Vector2 = (event as InputEventMouseMotion).position
+	var tab := _tab_at(pos)
+	var raw := -1 if tab != "" else _list.get_item_at_position(pos, true)
+	if raw >= 0 and not _view_list and not _cell_rect(raw).has_point(pos):
+		raw = -1
+	# Tabs and folded placeholders can be clicked: pointing-hand cursor
+	var cur := Control.CURSOR_POINTING_HAND if (tab != "" or _is_stub_idx(raw)) else Control.CURSOR_ARROW
+	if _list.mouse_default_cursor_shape != cur:
+		_list.mouse_default_cursor_shape = cur
+	var idx := -1 if _view_list else raw
+	if idx != _gh_idx or tab != _gh_tab:
+		if tab != _gh_tab:
+			_tab_hover_to(_gh_tab, 0.0)
+			_tab_hover_to(tab, 1.0)
+		_gh_idx = idx
+		_gh_tab = tab
+		_group_bg.queue_redraw()
+
+
+## Label cut into exactly two lines that each fit in a cell (measured a little narrower than
+## ItemList does, so it never re-wraps): short names get an empty second line, long names are
+## cut at a separator when possible and the second line ends with "…" if it still does not fit.
+func _two_line_label(text: String, cell_w: float, font: Font, fs: int) -> String:
+	var avail := maxf(cell_w - 16.0, 24.0)
+	var key := "%s|%d|%d" % [text, int(avail), fs]
+	if _label_cache.has(key):
+		return _label_cache[key]
+	var out := ""
+	if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x <= avail:
+		out = text + "\n\u00A0"   # non-breaking space: the empty line keeps its height
+	else:
+		var lo := 1
+		var hi := text.length()
+		while lo < hi:
+			var mid := int(ceil((lo + hi) / 2.0))
+			if font.get_string_size(text.substr(0, mid), HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x <= avail:
+				lo = mid
+			else:
+				hi = mid - 1
+		var cut := lo
+		for k in range(cut, int(cut * 0.5), -1):
+			if " _-./".contains(text[k - 1]):
+				cut = k
+				break
+		var first_line := text.substr(0, cut)
+		var rest := text.substr(cut)
+		if font.get_string_size(rest, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > avail:
+			var lo2 := 0
+			var hi2 := rest.length()
+			while lo2 < hi2:
+				var mid2 := int(ceil((lo2 + hi2) / 2.0))
+				if font.get_string_size(rest.substr(0, mid2) + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x <= avail:
+					lo2 = mid2
+				else:
+					hi2 = mid2 - 1
+			rest = rest.substr(0, lo2) + "…"
+		out = first_line + "\n" + rest
+	if _label_cache.size() > 4000:
+		_label_cache.clear()
+	_label_cache[key] = out
+	return out
+
+
+## Draws the group boxes (behind the list): one tinted rounded box per row segment, joined
+## across rows, with a tab on top of the first row showing the folder path ("A > B > C").
+func _draw_groups() -> void:
+	_group_tabs.clear()
+	if not _grouped or _groups.is_empty() or _list == null:
+		return
+	# The list computes its item rectangles lazily, during ITS own draw (which comes after this
+	# one, since we are behind it): without this, rectangles are stale / empty on the first
+	# frames and every box collapsed on the top-left corner.
+	if _list.has_method("force_update_list_size"):
+		_list.call("force_update_list_size")
+	var bg := COLOR_CENTER_PANEL
+	var view_h := _list.size.y
+	# ItemList.get_item_rect() includes the separation to the next item: remove it, otherwise
+	# the boxes of neighbouring groups touch each other (no gap) and overlap their tabs.
+	var acc: Color = EditorInterface.get_base_control().get_theme_color("accent_color", "Editor")
+	var font := _list.get_theme_font("font")
+	var fs := 10
+	for g in _groups:
+		var first: int = g.first
+		var last: int = g.last
+		# Cull groups that are entirely off screen
+		var rf := _item_rect(first, true)
+		var rl := _item_rect(last, true)
+		if rl.end.y + GROUP_PAD < -GROUP_TAB_H or rf.position.y - GROUP_PAD - GROUP_TAB_H > view_h:
+			continue
+		# Row segments of the group: [y, height, x0, x1]
+		var segs: Array = []
+		for i in range(first, last + 1):
+			var r := _cell_rect(i)
+			var seg: Array = segs[segs.size() - 1] if not segs.is_empty() else []
+			if not seg.is_empty() and absf(float(seg[0]) - r.position.y) < 2.0:
+				seg[2] = minf(float(seg[2]), r.position.x)
+				seg[3] = maxf(float(seg[3]), r.end.x)
+				seg[1] = maxf(float(seg[1]), r.size.y)
+			else:
+				segs.append([r.position.y, r.size.y, r.position.x, r.end.x])
+		var col: Color = g.color
+		var fill := bg.lerp(col, 0.13)      # opaque: overlapping rects never stack their alpha
+		var tab_fill := bg.lerp(col, lerpf(0.38, 0.55, float(_tab_hl.get(str(g.folder), 0.0))))   # lighter under the mouse
+		var rects: Array = []
+		for sg in segs:
+			rects.append(Rect2(float(sg[2]) - GROUP_PAD, float(sg[0]) - GROUP_PAD + 1.0, float(sg[3]) - float(sg[2]) + GROUP_PAD * 2.0, float(sg[1]) + GROUP_PAD * 2.0 - 2.0))
+		for i in rects.size():
+			var cur: Rect2 = rects[i]
+			var prev_ok := i > 0
+			var next_ok := i < rects.size() - 1
+			var prv: Rect2 = rects[i - 1] if prev_ok else Rect2()
+			var nxt: Rect2 = rects[i + 1] if next_ok else Rect2()
+			# Rounded outer corners; flat where the box continues into the neighbouring row
+			# (the first row's top-left is flat too: the path tab sits there, like a folder tab).
+			# A corner is only flat when the neighbouring row really sits above / below it (their
+			# columns overlap). Two rows of the same group that do not overlap (the end of one
+			# line and the start of the next) are two separate boxes: all their corners are round.
+			var ov_prev := prev_ok and _x_overlap(prv, cur)
+			var ov_next := next_ok and _x_overlap(nxt, cur)
+			var st := StyleBoxFlat.new()
+			st.bg_color = fill
+			st.corner_radius_top_left = 0 if (i == 0 or (ov_prev and prv.position.x <= cur.position.x + 1.0)) else GROUP_RADIUS
+			st.corner_radius_top_right = 0 if (ov_prev and prv.end.x >= cur.end.x - 1.0) else GROUP_RADIUS
+			st.corner_radius_bottom_left = 0 if (ov_next and nxt.position.x <= cur.position.x + 1.0) else GROUP_RADIUS
+			st.corner_radius_bottom_right = 0 if (ov_next and nxt.end.x >= cur.end.x - 1.0) else GROUP_RADIUS
+			_group_bg.draw_style_box(st, cur)
+			if ov_prev:
+				# Join with the previous row over the columns they share
+				var x0 := maxf(prv.position.x, cur.position.x)
+				var x1 := minf(prv.end.x, cur.end.x)
+				_group_bg.draw_rect(Rect2(x0, prv.end.y - 1.0, x1 - x0, cur.position.y - prv.end.y + 2.0), fill)
+				_draw_group_fillets(prv, cur, fill)
+		# Path tab on top of the first row segment
+		var top: Rect2 = rects[0]
+		var parts: Array = g.parts
+		var sep := " > "
+		var sep_w := font.get_string_size(sep, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		var foldable := int(g.count) > 1          # a group with a single item cannot be folded
+		var chev_w := 12.0 if foldable else 0.0   # fold arrow at the left of the tab
+		var cnt_txt := str(int(g.count))
+		var cnt_w := font.get_string_size(cnt_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x + 8.0
+		var max_w := maxf(top.size.x, 70.0)   # never wider than its own box
+		# Fold the folders shared by every group into "…", then drop more leading segments
+		# if the path still does not fit.
+		var start := mini(_group_common, parts.size() - 1)
+		var ell := "…" if start > 0 else ""
+		while true:
+			var total := 16.0 + chev_w + cnt_w
+			for k in range(start, parts.size()):
+				total += font.get_string_size(str(parts[k].name), HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x + 12.0
+				if k < parts.size() - 1:
+					total += sep_w
+			if ell != "":
+				total += font.get_string_size(ell, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x + sep_w
+			if total <= max_w or start >= parts.size() - 1:
+				break
+			start += 1
+			ell = "…"
+		var tab_w := 16.0 + chev_w + cnt_w
+		for k in range(start, parts.size()):
+			tab_w += font.get_string_size(str(parts[k].name), HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x + 12.0
+			if k < parts.size() - 1:
+				tab_w += sep_w
+		if ell != "":
+			tab_w += font.get_string_size(ell, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x + sep_w
+		tab_w = minf(tab_w, max_w)
+		var tab := Rect2(top.position.x, top.position.y - GROUP_TAB_H, tab_w, GROUP_TAB_H)   # flush on top of the box, not over it
+		var tab_style := _make_stylebox(tab_fill, Color.TRANSPARENT, 8)
+		tab_style.corner_radius_bottom_left = 0
+		tab_style.corner_radius_bottom_right = 0
+		_group_bg.draw_style_box(tab_style, tab)
+		if foldable:
+			_group_tabs.append([tab, str(g.folder)])
+		var x := tab.position.x + 8.0
+		var ty := tab.position.y + GROUP_TAB_H - 5.0
+		var text_col := _ov(0.92)
+		# Fold arrow: pointing down when the group is open, right when it is folded
+		var ac := Vector2(x + 4.0, tab.position.y + GROUP_TAB_H * 0.5 + 0.5)
+		if foldable:
+			# Triangle pointing right when folded, turned by 90 degrees (pointing down) when open
+			var open_t: float = _fold_t.get(g.folder, 0.0 if bool(g.folded) else 1.0)
+			var ang := open_t * PI * 0.5
+			_group_bg.draw_colored_polygon(PackedVector2Array([ac + Vector2(-2.0, -3.5).rotated(ang), ac + Vector2(-2.0, 3.5).rotated(ang), ac + Vector2(2.5, 0.0).rotated(ang)]), text_col)
+		x += chev_w
+		if ell != "":
+			_group_bg.draw_string(font, Vector2(x, ty), ell, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, text_col)
+			x += font.get_string_size(ell, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			_group_bg.draw_string(font, Vector2(x, ty), sep, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ov(0.45))
+			x += sep_w
+		for k in range(start, parts.size()):
+			var pc: Color = parts[k].color
+			_group_bg.draw_circle(Vector2(x + 3.0, ty - 3.5), 3.0, pc)   # color of that folder
+			x += 10.0
+			var nm := str(parts[k].name)
+			_group_bg.draw_string(font, Vector2(x, ty), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, text_col)
+			x += font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			if k < parts.size() - 1:
+				_group_bg.draw_string(font, Vector2(x, ty), sep, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ov(0.45))
+				x += sep_w
+			else:
+				x += 2.0
+		# Number of items of the group, only if it still fits in the tab
+		if x + cnt_w - 4.0 <= tab.end.x:
+			_group_bg.draw_string(font, Vector2(x + 4.0, ty), cnt_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, _ov(0.5))
+		# Folded group (grid): the item count, big, where the thumbnail would be
+		if bool(g.folded) and not _view_list:
+			var cr := _cell_rect(first)
+			var icon_w := float(_list.fixed_icon_size.x)
+			var big := clampi(int(icon_w * 0.4), 14, 36)
+			var tw := font.get_string_size(cnt_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, big).x
+			var cy := cr.position.y + float(_list.get_theme_constant("icon_margin")) + icon_w * 0.5
+			_group_bg.draw_string(font, Vector2(cr.position.x + (cr.size.x - tw) * 0.5, cy + big * 0.35), cnt_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, big, _ov(0.7))
+		# Selection / hover highlight, inside the box and behind the list (thumbnails stay untinted)
+		if not _view_list:
+			for i in range(first, last + 1):
+				var is_sel := _list.is_selected(i)
+				if not is_sel and i != _gh_idx:
+					continue
+				var hl: StyleBoxFlat
+				if is_sel:
+					hl = _make_stylebox(Color(acc.r, acc.g, acc.b, 0.26), Color(acc.r, acc.g, acc.b, 0.95), 8, 2)
+				else:
+					hl = _make_stylebox(_ov(0.07), _ov(0.14), 8, 1)
+				_group_bg.draw_style_box(hl, _cell_rect(i).grow(2.0))
+
+
 ## Strip color of an asset according to its type (resource class, otherwise extension).
 func _type_color(path: String, type: String) -> Color:
 	var ext := path.get_extension().to_lower()
 	var known := type != "" and ClassDB.class_exists(type)
 	var kind := "resource"
-	if ext in ["obj", "fbx", "glb", "gltf", "blend", "dae"] or (known and ClassDB.is_parent_class(type, "Mesh")):
+	if ext in MODEL_EXTS or (known and ClassDB.is_parent_class(type, "Mesh")):
 		kind = "model"
 	elif ext in ["tscn", "scn"] or type == "PackedScene":
 		kind = "scene"
@@ -1960,6 +2646,9 @@ func _draw_type_bars() -> void:
 	var icon_w := float(_list.fixed_icon_size.x)
 	var margin := float(_list.get_theme_constant("icon_margin"))
 	var thick := clampf(margin - 1.0, 3.0, 5.0)
+	# The thumbnail starts half a vertical separation below the top of the item's rect
+	# (grouped results use a large separation: the bars used to sit on top of the icons).
+	var voff := float(_list.get_theme_constant("v_separation")) * 0.5
 	for i in n:
 		var c := _item_colors[i]
 		if c.a <= 0.0:
@@ -1971,12 +2660,12 @@ func _draw_type_bars() -> void:
 			break   # items are laid out top to bottom: the rest is off screen
 		_bar_style.bg_color = Color(c.r, c.g, c.b, 0.95)
 		if _view_list:
-			_list.draw_style_box(_bar_style, Rect2(r.position.x + 1.0, r.position.y + 3.0, 3.0, maxf(r.size.y - 6.0, 4.0)))
+			_list.draw_style_box(_bar_style, Rect2(r.position.x + 1.0, r.position.y + voff + 3.0, 3.0, maxf(r.size.y - float(voff) * 2.0 - 6.0, 4.0)))
 		else:
 			var x := r.position.x + floorf((r.size.x - icon_w) * 0.5)
 			# Inset in the last pixels of the thumbnail (not in the margin before the
 			# text): so it can never overlap the file name, even on 2 lines.
-			var y := r.position.y + margin + icon_w - thick - 1.0
+			var y := r.position.y + voff + margin + icon_w - thick - 1.0
 			_list.draw_style_box(_bar_style, Rect2(x, y, icon_w, thick))
 
 
@@ -1995,9 +2684,29 @@ func _draw_list_overlay() -> void:
 				continue
 			if r.position.y > view_h:
 				break
-			var c := Vector2(r.end.x - 11.0, r.position.y + 11.0)
+			var c := Vector2(r.end.x - 11.0 - float(_list.get_theme_constant("h_separation")) * 0.5, r.position.y + 11.0 + float(_list.get_theme_constant("v_separation")) * 0.5)
+			if _grouped:
+				var cr := _cell_rect(i)
+				c = Vector2(cr.end.x - 9.0, cr.position.y + 9.0)   # inside the highlight of the cell
 			_list.draw_circle(c, 7.5, acc)
 			_list.draw_polyline(PackedVector2Array([c + Vector2(-3.2, 0.3), c + Vector2(-0.8, 2.7), c + Vector2(3.4, -2.3)]), Color.WHITE if acc.get_luminance() < 0.6 else Color.BLACK, 1.6, true)
+
+	# Fold / unfold animation: a veil of the box color, more or less transparent, over the cells of
+	# the groups that are fading (thumbnails, names and badges included)
+	if _grouped and not _content_t.is_empty():
+		for g in _groups:
+			var ca: float = _content_t.get(g.folder, 1.0)
+			if ca >= 0.999:
+				continue
+			var veil: Color = COLOR_CENTER_PANEL.lerp(g.color, 0.13)
+			veil.a = 1.0 - ca
+			for i in range(int(g.first), int(g.last) + 1):
+				var vr := _cell_rect(i)
+				if vr.end.y < 0.0:
+					continue
+				if vr.position.y > view_h:
+					break
+				_list.draw_rect(vr.grow(2.0), veil)
 
 	if _drop_whole:
 		_list.draw_style_box(_make_stylebox(Color(acc.r, acc.g, acc.b, 0.06), Color(acc.r, acc.g, acc.b, 0.75), 8, 2), Rect2(Vector2.ZERO, _list.size))
@@ -2072,6 +2781,8 @@ func _apply_list_layout() -> void:
 		_list.max_text_lines = 2
 		_list.fixed_icon_size = Vector2i(s, s)
 		_list.fixed_column_width = s + 28
+	if _group_bg != null:
+		_group_bg.queue_redraw()   # item sizes changed (zoom): redraw the group boxes
 
 
 ## Called when the user releases the separator between the list and the details panel.
@@ -2153,7 +2864,7 @@ func _request_visible_previews() -> void:
 	var previewer := EditorInterface.get_resource_previewer()
 	for i in range(lo, hi + 1):
 		var path := str(_list.get_item_metadata(i))
-		if _dir_paths.has(path) or _preview_pending.has(path):
+		if path.begins_with(GROUP_STUB) or _dir_paths.has(path) or _preview_pending.has(path):
 			continue
 		if path.get_extension().to_lower() == "svg" and not _svg_fail.has(path):
 			# Godot's thumbnail is small (≈ 64 px) then enlarged: blurry. We rasterize the
@@ -2307,7 +3018,7 @@ func _pass_filter(path: String, filter_idx: int) -> bool:
 	match filter_idx:
 		1: return ext in ["tscn", "scn"]
 		2: return ext in ["gd", "cs", "cpp", "h"]
-		3: return ext in ["obj", "fbx", "glb", "gltf", "blend"]
+		3: return ext in MODEL_EXTS
 		4: return ext in ["png", "jpg", "jpeg", "svg", "webp", "bmp", "tga", "exr", "hdr"]
 		5: return ext in ["wav", "ogg", "mp3"]
 		6: return ext in ["gdshader", "shader", "gdshaderinc"]
@@ -2324,6 +3035,8 @@ func _selected_paths() -> PackedStringArray:
 
 
 func _on_selection_changed(select_in_dock: bool = true) -> void:
+	if _group_bg != null:
+		_group_bg.queue_redraw()   # grouped mode draws the selection itself
 	var sel := _selected_paths()
 	if sel.size() == 0:
 		_update_details(current_dir if _active_set.is_empty() else "res://")
@@ -2348,12 +3061,14 @@ func _on_selection_changed(select_in_dock: bool = true) -> void:
 
 
 func _update_status_bar(_unused: int = -1) -> void:
-	var total := _list.item_count
+	var total := _list.item_count - _stub_count
 	var sel_count := _list.get_selected_items().size()
 	var where := current_dir if _active_set.is_empty() else L.t("Set : ") + _active_set
 	var txt := L.t("%d élément%s") % [total, "s" if total > 1 else ""]
 	if _truncated:
 		txt += L.t(" (limité à %d)") % MAX_ITEMS
+	if _stub_count > 0:
+		txt += L.t(" · %d groupe(s) replié(s)") % _stub_count
 	if sel_count > 0:
 		txt += L.t(" · %d sélectionné%s") % [sel_count, L.sel_s(sel_count > 1)]
 	_status.text = txt + " · " + where
@@ -2448,6 +3163,13 @@ func _update_details(path: String) -> void:
 				if not _preview_pending.has(path):
 					_preview_pending[path] = true
 					EditorInterface.get_resource_previewer().queue_resource_preview(path, self, "_on_preview", path)
+	if is_instance_valid(_btn_open):
+		if not is_dir and _is_model_scene(path):
+			_set_btn_label(_btn_open, L.t("Nouvelle scène héritée"))
+			_btn_open.icon = _icon_from("Instance,PackedScene")
+		else:
+			_set_btn_label(_btn_open, L.t("Ouvrir"))
+			_btn_open.icon = _icon_from("Load,Folder")
 	_set_fav_state(path)
 	if is_instance_valid(_btn_copy_res):
 		_btn_copy_res.visible = not is_dir
@@ -2492,6 +3214,254 @@ func _refresh_breadcrumbs() -> void:
 			sep.text = "›"
 			sep.modulate = TEXT_MUTED
 			_breadcrumbs.add_child(sep)
+
+
+# ---------- Editable path bar (click the breadcrumb strip to type a path) ----------
+
+func _on_path_bar_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_enter_path_edit_mode()
+
+
+func _enter_path_edit_mode() -> void:
+	if not is_instance_valid(_path_edit) or _path_edit_active:
+		return
+	_path_edit_active = true
+	_path_edit.text = current_dir
+	_breadcrumbs.visible = false
+	_path_edit.visible = true
+	_path_edit.grab_focus()
+	_path_edit.caret_column = _path_edit.text.length()
+	_update_path_suggestions()
+
+
+func _exit_path_edit_mode() -> void:
+	if not _path_edit_active:
+		return
+	_path_edit_active = false
+	_hide_path_suggest()
+	if is_instance_valid(_path_ghost):
+		_path_ghost.visible = false
+	if is_instance_valid(_path_edit):
+		_path_edit.visible = false
+		if _path_edit.has_focus():
+			_path_edit.release_focus()
+	if is_instance_valid(_breadcrumbs):
+		_breadcrumbs.visible = true
+
+
+## True if `pt` (global coordinates) is over the visible path-suggestion dropdown, which lives
+## outside the drawer node (on the editor overlay) and can extend beyond the drawer's rectangle.
+func _point_in_path_suggest(pt: Vector2) -> bool:
+	return is_instance_valid(_path_suggest) and _path_suggest.visible and _path_suggest.get_global_rect().has_point(pt)
+
+
+func _on_path_edit_changed(_new_text: String) -> void:
+	_update_path_suggestions()
+
+
+## Rebuilds the dropdown list from the current text. The top entry is always the same one
+## offered as the inline ghost completion, so Tab and "click the top suggestion" land in the
+## same place.
+func _update_path_suggestions() -> void:
+	for c in _path_suggest_list.get_children():
+		_path_suggest_list.remove_child(c)
+		c.queue_free()
+	_path_suggest_paths.clear()
+	_path_suggest_sel = -1
+	_path_suggest_nav = false
+
+	var norm := _path_edit.text
+	if "res://".begins_with(norm):
+		norm = "res://"   # "", "res", "res:", "res:/" (a "/" deleted from "res://"): list the root again
+	elif not norm.begins_with("res://"):
+		norm = "res://" + norm.lstrip("/")
+	var last_slash := norm.rfind("/")
+	var base_dir := norm.substr(0, last_slash + 1)
+	if base_dir == "res:/":
+		base_dir = "res://"
+	var partial_lc := norm.substr(last_slash + 1).to_lower()
+
+	if _index_dirty:
+		_build_index()
+
+	var matches: Array = []   # [full_path, last_segment]
+	for e in _index:
+		if not e[2]:   # folders only
+			continue
+		# EditorFileSystemDirectory.get_path() may end with "/" (depending on the Godot version):
+		# without trimming it, "rest" below always contains "/" and every folder is rejected.
+		var p: String = str(e[0]).trim_suffix("/")
+		if not p.begins_with(base_dir):
+			continue
+		var rest: String = p.substr(base_dir.length())
+		if rest.is_empty() or rest.contains("/"):
+			continue   # only direct children of base_dir, like a shell path completion
+		if partial_lc.is_empty() or rest.to_lower().begins_with(partial_lc):
+			matches.append([p, rest])
+	matches.sort_custom(func(a, b): return a[1].to_lower() < b[1].to_lower())
+
+	var shown := mini(matches.size(), 12)
+	for i in shown:
+		var full_path: String = matches[i][0]
+		_path_suggest_paths.append(full_path)
+		var btn := Button.new()
+		btn.text = full_path
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.flat = false
+		btn.add_theme_stylebox_override("normal", _ghost_box(Color(1, 1, 1, 0.0), 8, 4))
+		btn.add_theme_stylebox_override("hover", _ghost_box(_ov(0.10), 8, 4))
+		btn.add_theme_stylebox_override("pressed", _ghost_box(_ov(0.18), 8, 4))
+		btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+		btn.add_theme_font_size_override("font_size", 12)
+		btn.pressed.connect(func() -> void: _commit_path_edit(full_path))
+		_path_suggest_list.add_child(btn)
+
+	if _path_suggest_paths.is_empty():
+		_hide_path_suggest()
+	else:
+		_show_path_suggest()
+		_highlight_path_suggest(0)   # the most logical match is pre-selected: Enter/Tab picks it
+	_update_path_ghost()
+
+
+## Shows, right after the caret, the rest of the top suggestion's last path segment in a
+## dimmed color — e.g. typing "tra" shows a faint "duction" right after it (for "Traduction").
+func _update_path_ghost() -> void:
+	if not is_instance_valid(_path_ghost):
+		return
+	if not _path_edit_active or not _path_edit.visible or _path_suggest_paths.is_empty() \
+			or _path_edit.caret_column != _path_edit.text.length():
+		_path_ghost.visible = false
+		return
+	var typed := _path_edit.text
+	if not typed.begins_with("res://"):
+		_path_ghost.visible = false
+		return
+	var typed_seg := typed.substr(typed.rfind("/") + 1)
+	var top: String = _path_suggest_paths[0]
+	var full_seg := top.substr(top.rfind("/") + 1)
+	if full_seg.length() <= typed_seg.length() or not full_seg.to_lower().begins_with(typed_seg.to_lower()):
+		_path_ghost.visible = false
+		return
+	_path_ghost.text = full_seg.substr(typed_seg.length())
+	_path_ghost.add_theme_color_override("font_color", TEXT_MUTED)
+	_position_path_ghost()
+	_path_ghost.visible = true
+
+
+func _position_path_ghost() -> void:
+	if not is_instance_valid(_path_ghost) or not is_instance_valid(_path_edit):
+		return
+	var font := _path_edit.get_theme_font("font")
+	var fs := _path_edit.get_theme_font_size("font_size")
+	_path_ghost.add_theme_font_override("font", font)
+	_path_ghost.add_theme_font_size_override("font_size", fs)
+	var left := _path_edit.get_theme_stylebox("normal").get_margin(SIDE_LEFT)
+	var tw := font.get_string_size(_path_edit.text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	_path_ghost.global_position = _path_edit.global_position + Vector2(left + tw, 0.0)
+	_path_ghost.size = Vector2(_path_ghost.get_minimum_size().x, _path_edit.size.y)
+
+
+func _show_path_suggest() -> void:
+	if not is_instance_valid(_path_suggest) or not is_instance_valid(_path_bar_panel):
+		return
+	_path_suggest.visible = true
+	_path_suggest.reset_size()
+	var w: float = maxf(_path_bar_panel.size.x, 260.0)
+	_path_suggest.custom_minimum_size = Vector2(w, 0)
+	_path_suggest.size = _path_suggest.get_combined_minimum_size()
+	# The drawer is anchored at the bottom of the editor: below the bar there is usually not enough
+	# room for the list, so it opens above the bar in that case.
+	var bar := _path_bar_panel.get_global_rect()
+	var base_sz: Vector2 = EditorInterface.get_base_control().size
+	var sz: Vector2 = _path_suggest.size
+	var pos := bar.position + Vector2(0, bar.size.y + 2.0)
+	if pos.y + sz.y > base_sz.y - 4.0 and bar.position.y - sz.y - 2.0 >= 4.0:
+		pos.y = bar.position.y - sz.y - 2.0
+	pos.x = clampf(pos.x, 4.0, maxf(4.0, base_sz.x - sz.x - 4.0))
+	_path_suggest.global_position = pos
+
+
+func _hide_path_suggest() -> void:
+	if is_instance_valid(_path_suggest):
+		_path_suggest.visible = false
+	_path_suggest_sel = -1
+
+
+func _highlight_path_suggest(i: int) -> void:
+	_path_suggest_sel = i
+	for j in _path_suggest_list.get_child_count():
+		var btn := _path_suggest_list.get_child(j) as Button
+		var bg := _ov(0.16) if j == i else Color(1, 1, 1, 0.0)
+		btn.add_theme_stylebox_override("normal", _ghost_box(bg, 8, 4))
+
+
+func _on_path_edit_gui_input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed):
+		return
+	var k := event as InputEventKey
+	if k.keycode == KEY_TAB:
+		_accept_path_ghost_or_selection()
+		_path_edit.accept_event()
+		return
+	if is_instance_valid(_path_suggest) and _path_suggest.visible and not _path_suggest_paths.is_empty():
+		if k.keycode == KEY_DOWN:
+			_path_suggest_nav = true
+			_highlight_path_suggest((_path_suggest_sel + 1) % _path_suggest_paths.size())
+			_update_path_ghost()
+			_path_edit.accept_event()
+			return
+		elif k.keycode == KEY_UP:
+			_path_suggest_nav = true
+			var n := _path_suggest_paths.size()
+			_highlight_path_suggest((_path_suggest_sel - 1 + n) % n)
+			_update_path_ghost()
+			_path_edit.accept_event()
+			return
+	# Any other key (arrows, Home/End, typing...): the caret may have moved, refresh the ghost
+	# once the LineEdit has applied the keystroke.
+	_update_path_ghost.call_deferred()
+
+
+## Tab, or clicking the top/selected suggestion: completes the current segment and appends "/"
+## so typing (or another Tab) continues straight into that folder.
+func _accept_path_ghost_or_selection() -> void:
+	if _path_suggest_paths.is_empty():
+		return
+	var idx := _path_suggest_sel if _path_suggest_sel >= 0 else 0
+	var full_path: String = _path_suggest_paths[idx]
+	_path_edit.text = full_path + "/"
+	_path_edit.caret_column = _path_edit.text.length()
+	_update_path_suggestions()
+
+
+func _on_path_edit_submitted(_text: String) -> void:
+	var target := _path_edit.text.strip_edges()
+	var typed := target if target.begins_with("res://") else "res://" + target.lstrip("/")
+	var has_sel := _path_suggest_sel >= 0 and _path_suggest_sel < _path_suggest_paths.size()
+	# A complete, existing path (e.g. right after Tab) is opened as typed: the pre-selected first
+	# suggestion is only used when the typed path does not exist yet, or after Up / Down.
+	if has_sel and (_path_suggest_nav or not DirAccess.dir_exists_absolute(typed)):
+		target = _path_suggest_paths[_path_suggest_sel]
+	_commit_path_edit(target)
+
+
+func _commit_path_edit(path: String) -> void:
+	var p := path.strip_edges()
+	if p.is_empty():
+		_exit_path_edit_mode()
+		return
+	if not p.begins_with("res://"):
+		p = "res://" + p.lstrip("/")
+	if p != "res://":
+		p = p.trim_suffix("/")
+	if DirAccess.dir_exists_absolute(p):
+		_navigate(p)
+		_exit_path_edit_mode()
+	else:
+		_flash(L.t("Dossier introuvable : « %s »") % p, true)
 
 
 func _refresh_tree() -> void:
@@ -2611,6 +3581,8 @@ func _process(_delta: float) -> void:
 	_update_paste_pop_hover()
 	_update_copy_pop_hover()
 	_pump_svg_queue()
+	if _path_edit_active and is_instance_valid(_path_ghost) and _path_ghost.visible:
+		_position_path_ghost()   # keeps the ghost text glued to the field if the drawer moves/resizes
 	# Safeguard: the "Ctrl+Space" pill must always be invisible while the drawer
 	# is open. Reasserted every frame rather than relying only on open()/close(),
 	# in case a side path (theme reload, deferred call...) missed it.
@@ -3148,6 +4120,7 @@ func close() -> void:
 	is_open = false
 	_flush_cfg()
 	_ctx_popup.hide()
+	_exit_path_edit_mode()
 	var base := EditorInterface.get_base_control()
 	_animate_close(base)
 	_tween.finished.connect(func() -> void:
@@ -3357,11 +4330,25 @@ func _show_in_dock(path: String) -> void:
 
 
 func _on_item_activated(index: int) -> void:
-	_open_path(str(_list.get_item_metadata(index)))
+	var p := str(_list.get_item_metadata(index))
+	if p.begins_with(GROUP_STUB):
+		_toggle_group(p.trim_prefix(GROUP_STUB))   # Enter / double-click on a folded placeholder
+		return
+	_open_path(p)
 
 
-const MODEL_EXTS := ["glb", "gltf", "fbx", "blend", "dae", "obj"]
-const MODEL_SCENE_EXTS := ["glb", "gltf", "fbx", "blend", "dae"]   # imported as scenes (obj = Mesh)
+## The details panel's main button. For 3D models it is "New Inherited Scene" (like the
+## base FileSystem dock's main action for these), relabeled by _update_details(); for
+## everything else it stays "Open".
+func _on_open_pressed() -> void:
+	if not _context_path.is_empty() and _is_model_scene(_context_path):
+		_new_inherited_scene(_context_path)
+	else:
+		_open_path(_context_path)
+
+
+const MODEL_EXTS := ["glb", "gltf", "fbx", "blend", "dae", "obj", "vrm"]
+const MODEL_SCENE_EXTS := ["glb", "gltf", "fbx", "blend", "dae", "vrm"]   # imported as scenes (obj = Mesh)
 
 
 func _is_model(path: String) -> bool:
@@ -3578,6 +4565,18 @@ func _input(event: InputEvent) -> void:
 					2: _create_scene()
 					3: _create_script()
 				return
+	if _path_edit_active and is_instance_valid(_path_edit):
+		if event is InputEventKey and event.pressed and (event as InputEventKey).keycode == KEY_ESCAPE:
+			_exit_path_edit_mode()
+			get_viewport().set_input_as_handled()
+			return
+		elif event is InputEventMouseButton and event.pressed:
+			var pt: Vector2 = (event as InputEventMouseButton).global_position
+			var inside: bool = is_instance_valid(_path_bar_panel) and _path_bar_panel.get_global_rect().has_point(pt)
+			if not inside and is_instance_valid(_path_suggest) and _path_suggest.visible:
+				inside = _path_suggest.get_global_rect().has_point(pt)
+			if not inside:
+				_exit_path_edit_mode()
 	# Mouse side buttons: back / forward (only over the drawer)
 	if is_open and event is InputEventMouseButton and event.pressed:
 		var xb := event as InputEventMouseButton
@@ -3591,7 +4590,8 @@ func _input(event: InputEvent) -> void:
 	if is_open and not pinned and event is InputEventMouseButton and event.pressed:
 		var mb := event as InputEventMouseButton
 		var is_wheel := mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT, MOUSE_BUTTON_XBUTTON1, MOUSE_BUTTON_XBUTTON2]
-		if not is_wheel and not _resizing and not _ctx_popup.visible and not get_global_rect().has_point(mb.global_position):
+		if not is_wheel and not _resizing and not _ctx_popup.visible and not get_global_rect().has_point(mb.global_position) \
+				and not _point_in_path_suggest(mb.global_position):
 			_outside_close_msec = Time.get_ticks_msec()
 			close()
 		return
@@ -3654,11 +4654,26 @@ func _on_list_gui_input(event: InputEvent) -> void:
 	if not (event is InputEventMouseButton) or not event.pressed:
 		return
 	var mb := event as InputEventMouseButton
+	# Grouped results: a click on a path tab or on a folded placeholder folds / unfolds the group
+	# (Shift+click: all the groups at once).
+	if _grouped and mb.button_index == MOUSE_BUTTON_LEFT:
+		var fold_target := _tab_at(mb.position)
+		if fold_target == "":
+			var si := _list.get_item_at_position(mb.position, true)
+			if _is_stub_idx(si) and _cell_rect(si).has_point(mb.position):
+				fold_target = str(_list.get_item_metadata(si)).trim_prefix(GROUP_STUB)
+		if fold_target != "":
+			if not mb.double_click:
+				_toggle_group(fold_target, mb.shift_pressed)
+			_list.accept_event()
+			return
 	if mb.button_index == MOUSE_BUTTON_LEFT and not mb.double_click \
 			and _list.item_count > 0 and _list.get_item_at_position(mb.position, true) < 0:
 		_marquee_begin(mb)
 	elif mb.button_index == MOUSE_BUTTON_RIGHT:
 		var idx := _list.get_item_at_position(mb.position, true)
+		if _is_stub_idx(idx) or (_grouped and _tab_at(mb.position) != ""):
+			idx = -1   # a folded placeholder / a tab behaves like an empty area
 		if idx >= 0:
 			if not _list.is_selected(idx):
 				_list.deselect_all()
@@ -3707,6 +4722,8 @@ func _marquee_update(pos: Vector2, mask: int) -> void:
 	for i in _mq_base:
 		_list.select(i, false)
 	for i in _list.item_count:
+		if not _list.is_item_selectable(i):
+			continue   # folded-group placeholder
 		var r := _item_rect(i, true).grow(-4.0)
 		if r.position.y > rect.end.y:
 			break
@@ -4430,6 +5447,15 @@ func _show_context() -> void:
 					_refresh()
 					_flash(L.t("Retiré des favoris") if was_fav else L.t("Ajouté aux favoris"))
 				, Color.TRANSPARENT, "Favorites")
+			_ctx_sep()
+		var can_fold_any := false
+		for fg in _groups:
+			if int(fg.count) > 1:
+				can_fold_any = true
+				break
+		if _grouped and can_fold_any:
+			_ctx_btn(L.t("Replier tous les groupes"), func() -> void: _set_all_groups_folded(true), Color.TRANSPARENT, "GuiTreeArrowRight")
+			_ctx_btn(L.t("Déplier tous les groupes"), func() -> void: _set_all_groups_folded(false), Color.TRANSPARENT, "GuiTreeArrowDown")
 			_ctx_sep()
 		_ctx_btn(L.t("Actualiser"), func() -> void:
 			_scan()
