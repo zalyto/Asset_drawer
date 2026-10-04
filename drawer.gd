@@ -5646,7 +5646,7 @@ func _script_languages() -> Array:
 	var out: Array = []
 	out.append({"sep": L.t("Scripts")})
 	out.append({"name": "GDScript", "ext": "gd"})
-	if OS.has_feature("mono"):
+	if ClassDB.class_exists("CSharpScript"):
 		out.append({"name": "C#", "ext": "cs"})
 	out.append({"name": L.t("Shader"), "ext": "gdshader"})
 	# Common text file types, not tied to a particular script language
