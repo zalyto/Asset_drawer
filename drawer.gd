@@ -84,6 +84,8 @@ const TYPE_COLORS := {
 
 var is_open := false
 var pinned := false
+var _scenes_to_reload: Array = []   # open scenes to reload once the filesystem scan is finished
+var _reload_armed := false
 var current_dir := "res://"
 var _history: PackedStringArray = PackedStringArray(["res://"])
 var _history_i := 0
@@ -326,6 +328,11 @@ func _make_timer(delay: float, cb: Callable) -> Timer:
 
 
 func _on_fs_changed() -> void:
+	if _reload_armed and not EditorInterface.get_resource_filesystem().is_scanning():
+		_reload_armed = false
+		var scenes := _scenes_to_reload
+		_scenes_to_reload = []
+		_reload_scenes_after_scan.call_deferred(scenes)
 	# Nothing to rebuild while the drawer is closed: we just mark it "dirty".
 	_dirty = true
 	_tree_dirty = true
@@ -2662,7 +2669,10 @@ func _draw_type_bars() -> void:
 		if _view_list:
 			_list.draw_style_box(_bar_style, Rect2(r.position.x + 1.0, r.position.y + voff + 3.0, 3.0, maxf(r.size.y - float(voff) * 2.0 - 6.0, 4.0)))
 		else:
-			var x := r.position.x + floorf((r.size.x - icon_w) * 0.5)
+			# expand = false: with true, the last column of a row is stretched up to the right edge of
+			# the list, so the bar followed the panel when it was resized.
+			var rc := _item_rect(i, false)
+			var x := rc.position.x + floorf((rc.size.x - icon_w) * 0.5)
 			# Inset in the last pixels of the thumbnail (not in the margin before the
 			# text): so it can never overlap the file name, even on 2 lines.
 			var y := r.position.y + voff + margin + icon_w - thick - 1.0
@@ -2679,7 +2689,7 @@ func _draw_list_overlay() -> void:
 
 	if not _view_list:
 		for i in _list.get_selected_items():
-			var r := _item_rect(i, true)
+			var r := _item_rect(i, false)   # not expanded: see _draw_type_bars
 			if r.end.y < 0.0:
 				continue
 			if r.position.y > view_h:
@@ -2712,7 +2722,7 @@ func _draw_list_overlay() -> void:
 		_list.draw_style_box(_make_stylebox(Color(acc.r, acc.g, acc.b, 0.06), Color(acc.r, acc.g, acc.b, 0.75), 8, 2), Rect2(Vector2.ZERO, _list.size))
 
 	if _drop_list_idx >= 0 and _drop_list_idx < _list.item_count:
-		var r2 := _item_rect(_drop_list_idx, true)
+		var r2 := _item_rect(_drop_list_idx, _view_list)
 		var glow := _make_stylebox(Color(acc.r, acc.g, acc.b, 0.26), acc, 9, 2)
 		glow.shadow_color = Color(acc.r, acc.g, acc.b, 0.5)
 		glow.shadow_size = 8
@@ -4724,7 +4734,7 @@ func _marquee_update(pos: Vector2, mask: int) -> void:
 	for i in _list.item_count:
 		if not _list.is_item_selectable(i):
 			continue   # folded-group placeholder
-		var r := _item_rect(i, true).grow(-4.0)
+		var r := _item_rect(i, _view_list).grow(-4.0)
 		if r.position.y > rect.end.y:
 			break
 		if r.end.y < rect.position.y:
@@ -5572,7 +5582,17 @@ func _unique_path(dir: String, base_name: String, ext: String) -> String:
 
 
 func _scan() -> void:
+	if not _scenes_to_reload.is_empty():
+		_reload_armed = true
 	EditorInterface.get_resource_filesystem().scan()
+
+
+## Reloading an open scene BEFORE the scan made it resolve the moved resources through the old
+## uid -> path cache: the instances (prefabs) of the moved scenes came back as missing.
+func _reload_scenes_after_scan(scenes: Array) -> void:
+	for sc in scenes:
+		if FileAccess.file_exists(str(sc)):
+			EditorInterface.reload_scene_from_path(str(sc))
 
 
 func _target_dir() -> String:
@@ -6028,9 +6048,11 @@ func _update_references(moves: Array) -> void:
 				w.close()
 				changed_files += 1
 	if changed_files > 0:
-		# Reload the open scenes, otherwise the editor may rewrite the old paths
+		# The open scenes must be reloaded (otherwise the editor may rewrite the old paths), but
+		# only after the scan that follows (_scan -> _on_fs_changed): see _reload_scenes_after_scan.
+		_scenes_to_reload = []
 		for scene in EditorInterface.get_open_scenes():
-			EditorInterface.reload_scene_from_path(scene)
+			_scenes_to_reload.append(scene)
 
 func _swap_prefix(p: String, src: String, dst: String) -> String:
 	var sp := p.trim_suffix("/")
